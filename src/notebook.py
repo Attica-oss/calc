@@ -1,0 +1,260 @@
+import marimo
+
+__generated_with = "0.23.16"
+app = marimo.App(auto_download=["html"])
+
+with app.setup:
+    from datetime import date, time
+    from decimal import Decimal
+
+    import marimo as mo
+
+    from engine_cli import (
+        Duration,
+        ExpressionError,
+        Quantity,
+        Unit,
+        category_of,
+        evaluate_expression,
+        format_result,
+    )
+
+
+@app.cell(hide_code=True)
+def _():
+    mo.md(r"""
+    # calc engine playground
+
+    This notebook exercises the same expression engine the CLI uses
+    (`engine_cli.py`). Nothing here is redefined — everything below
+    is imported, so there's a single source of truth for the
+    tokenizer, parser, type checker, and evaluator. It runs the
+    engine's inline test suite on load, then gives you a live UI to
+    try expressions against a handful of sample variables.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _():
+    mo.md(r"""
+    # Inline tests:
+    a tiny executable spec of the engine's behaviour.<br>
+    They run on notebook load; the cell renders a checkmark when green.
+    """)
+    return
+
+
+@app.cell
+def _():
+    def _check(expression, expected_value, expected_category, variables=None):
+        result = evaluate_expression(expression, variables or {})
+
+        assert result.category == expected_category, (
+            expression,
+            result.category,
+            expected_category,
+        )
+        assert result.value == expected_value, (
+            expression,
+            result.value,
+            expected_value,
+        )
+
+    def _expect_error(expression, fragment, variables=None):
+        try:
+            evaluate_expression(expression, variables or {})
+        except ExpressionError as error:
+            assert fragment in error.message, (expression, error.message)
+        else:
+            raise AssertionError(f"{expression!r} should have failed")
+
+    # Numbers: int stays int, division is exact Decimal, never float.
+    _check("1 + 2", 3, "int")
+    _check("7 // 2", 3, "int")
+    _check("1 / 2", Decimal("0.5"), "decimal")
+    _check("2 ** 10", Decimal(1024), "decimal")
+    _check("min(3, 1.5)", Decimal("1.5"), "decimal")
+
+    # Quantities.
+    _check("$5 + $2.50", Quantity(Decimal("7.50"), Unit.CURRENCY), "currency")
+    _check("$10 / 4", Quantity(Decimal("2.50"), Unit.CURRENCY), "currency")
+    _check("$10 / $4", Decimal("2.5"), "decimal")
+    _check("3 * 1.5t", Quantity(Decimal("4.5"), Unit.TONNAGE), "tonnage")
+    _check("-$5", Quantity(Decimal("-5"), Unit.CURRENCY), "currency")
+    _check(
+        "sum($1.10, $2.20, $3.30)",
+        Quantity(Decimal("6.60"), Unit.CURRENCY),
+        "currency",
+    )
+
+    # Currency x tonnage: currency behaves as an implicit per-tonne rate.
+    _check("$450 * 2.4t", Quantity(Decimal("1080"), Unit.CURRENCY), "currency")
+    _check("2.4t * $450", Quantity(Decimal("1080"), Unit.CURRENCY), "currency")
+    _check(
+        "price * shipment",
+        Quantity(Decimal("30"), Unit.CURRENCY),
+        "currency",
+        {
+            "price": Quantity(Decimal("12.50"), Unit.CURRENCY),
+            "shipment": Quantity(Decimal("2.4"), Unit.TONNAGE),
+        },
+    )
+
+    # Temporals: every difference is a duration now.
+    _check("2026-05-01 - 2026-04-28", Duration(days=3), "duration")
+    _check("2026-01-31 + 1mo", date(2026, 2, 28), "date")
+    _check("10:30 + 45min", time(11, 15), "time")
+    _check("days_between(2026-01-01, 2026-02-01)", 31, "int")
+
+    # Functions and variables.
+    _check("sum(1, 2, 3)", 6, "int")
+    _check("avg(1, 2)", Decimal("1.5"), "decimal")
+    _check(
+        "price * qty",
+        Quantity(Decimal("37.50"), Unit.CURRENCY),
+        "currency",
+        {"price": Quantity(Decimal("12.50"), Unit.CURRENCY), "qty": 3},
+    )
+
+    # if() is lazy: the untaken branch is never evaluated.
+    _check(
+        "if(2 > 1, $5, $6)", Quantity(Decimal(5), Unit.CURRENCY), "currency"
+    )
+    _check("if(1 = 1, 2, 1 // 0)", 2, "int")
+
+    # Static type errors, caught before evaluation.
+    _expect_error("$5 + 3", "not defined for a currency amount")
+    _expect_error("if(1, 2, 3)", "boolean condition")
+    _expect_error("if(1 = 1, 2, $2)", "same type")
+    _expect_error("1 < 2 < 3", "Chained comparisons")
+    _expect_error("2026-01-01 + 2h", "Use a datetime instead")
+    _expect_error("missing + 1", "Unknown variable")
+
+    # Percentages: lexed as literals, applied via *.
+    _check("$5.2 * 1.5%", Quantity(Decimal("0.08"), Unit.CURRENCY), "currency")
+    _check("1.5% * $5.2", Quantity(Decimal("0.08"), Unit.CURRENCY), "currency")
+    _check("200 * 10%", Decimal("20"), "decimal")
+    _check("5% + 2.5%", Quantity(Decimal("0.075"), Unit.PERCENT), "percent")
+    _check("50% * 10%", Quantity(Decimal("0.05"), Unit.PERCENT), "percent")
+    _check("3% / 2", Quantity(Decimal("0.015"), Unit.PERCENT), "percent")
+    _check("10% / 5%", Decimal(2), "decimal")
+    _check("avg(10%, 20%)", Quantity(Decimal("0.15"), Unit.PERCENT), "percent")
+    _check("-5%", Quantity(Decimal("-0.05"), Unit.PERCENT), "percent")
+    _check("7 % 3", 1, "int")  # modulo unchanged when % stands alone
+    assert format_result(evaluate_expression("5% + 2.5%").value) == "7.5%"
+    _expect_error("$5 + 5%", "not defined")  # grow-by is intentionally out
+
+    # Runtime errors still surface cleanly, with a position attached.
+    _expect_error("1 / 0", "divide by zero")
+
+    mo.md("✅ All inline tests passed.")
+    return
+
+
+@app.cell(hide_code=True)
+def _():
+    mo.md(r"""
+    # Sample variable bindings
+    """)
+    return
+
+
+@app.cell
+def _():
+    # Sample variable bindings — edit these to experiment. In the real
+    # spreadsheet these become other cells' evaluated results.
+    variables = {
+        "price": Quantity(Decimal("12.50"), Unit.CURRENCY),
+        "qty": 3,
+        "shipment": Quantity(Decimal("2.4"), Unit.TONNAGE),
+        "start": date(2026, 1, 15),
+    }
+
+    _rows = "\n".join(
+        f"| `{name}` | `{format_result(value)}` | {category_of(value)} |"
+        for name, value in variables.items()
+    )
+
+    mo.md(
+        "**Variables**\n\n"
+        "| Name | Value | Type |\n"
+        "| --- | --- | --- |\n"
+        f"{_rows}"
+    )
+    return (variables,)
+
+
+@app.cell
+def _():
+    expression_input = mo.ui.text(
+        value="if(qty > 2, price * qty, price)",
+        label="Expression",
+        placeholder="Enter a calculation",
+        full_width=True,
+    )
+
+    expression_input
+    return (expression_input,)
+
+
+@app.cell
+def _(expression_input, variables):
+    try:
+        _result = evaluate_expression(expression_input.value, variables)
+
+        _parts = [
+            mo.md(f"### Result: `{format_result(_result.value)}`"),
+            mo.md(f"Type: `{_result.category}`"),
+        ]
+
+        if _result.variables:
+            _names = ", ".join(f"`{name}`" for name in _result.variables)
+            _parts.append(mo.md(f"Depends on: {_names}"))
+
+        _output = mo.vstack(_parts)
+    except ExpressionError as _error:
+        if _error.position is not None:
+            _pointer = " " * _error.position + "^"
+            _output = mo.vstack(
+                [
+                    mo.callout(_error.message, kind="warn"),
+                    mo.md(
+                        f"```text\n{expression_input.value}\n{_pointer}\n```"
+                    ),
+                ]
+            )
+        else:
+            _output = mo.callout(_error.message, kind="warn")
+
+    _output
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    **Try:**
+    `price * qty + $4.99` ·
+    `price * shipment` ·
+    `shipment * 4` ·
+    `avg($10, $12, $15.50)` ·
+    `start + 6mo - 1d` ·
+    `days_between(start, today())` ·
+    `if(shipment > 2t, $100, $150)` ·
+    `sum(2h, 45min, 30min)` ·
+    `$5.2 * 1.5%` ·
+    `price - price * 15%`
+
+    **These fail the type check (on purpose):**
+    `$5 + 3` ·
+    `price + shipment` ·
+    `if(1, 2, 3)` ·
+    `2026-01-01 + 2h` ·
+    `$5 + 5%`
+    """)
+    return
+
+
+if __name__ == "__main__":
+    app.run()
