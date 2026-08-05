@@ -179,7 +179,14 @@ def run_repl(variables: dict) -> int:
 
     while True:
         try:
-            line = console.input("[calc.prompt]calc>[/calc.prompt] ").strip()
+            # Print the colored prompt ourselves and read with a bare
+            # input(): readline uses the prompt string's raw length to
+            # position the cursor, and it can't tell rich's ANSI color
+            # codes are zero-width, so a colored prompt passed straight
+            # to input() throws off redraws (e.g. pressing the left
+            # arrow blanks the prompt).
+            console.print("[calc.prompt]calc>[/calc.prompt] ", end="")
+            line = input().strip()
         except EOFError:
             console.print()
             return 0
