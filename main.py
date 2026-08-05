@@ -14,24 +14,35 @@ Interactive REPL (no expression argument):
     python main.py
     calc> $450 * 2.4t
     $1,080.00  (currency)
+    calc> -
+    $1,080.00  (currency)
+    calc> ans * 1.1
+    $1,188.00  (currency)
     calc> let price = $12.50
     calc> let total = price * 3
     calc> total > $30
     TRUE  (boolean)
     calc> vars
+    calc> reset
     calc> exit
 
 Inside the REPL, ``let name = expression`` binds a variable. Plain ``=``
 stays the language's equality operator, which is why assignment needs
 the ``let`` keyword: ``qty = 3`` is a comparison, ``let qty = 3`` is a
-binding.
+binding. The result of the last plain expression is bound to ``ans``;
+``-`` alone is shorthand for it. ``clear`` clears the screen, ``reset``
+clears all bound variables.
 """
 
 from __future__ import annotations
 
-import argparse
 import re
 import sys
+from typing import Annotated
+
+import typer
+from rich.console import Console
+from rich.theme import Theme
 
 from src.engine_cli import (
     ExpressionError,
@@ -40,30 +51,77 @@ from src.engine_cli import (
     format_result,
 )
 
+THEME = Theme(
+    {
+        "calc.prompt": "bold cyan",
+        "calc.value": "bold green",
+        "calc.currency": "bold #000080",
+        "calc.tonnage": "bold #ff8700",
+        "calc.category": "dim",
+        "calc.variable": "yellow",
+        "calc.error": "bold red",
+        "calc.pointer": "red",
+        "calc.source": "dim",
+        "calc.info": "dim italic",
+    }
+)
+
+console = Console(theme=THEME)
+error_console = Console(theme=THEME, stderr=True)
+
 PROMPT = "calc> "
 
 LET_RE = re.compile(r"^\s*let\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$")
 
+# Per-category value colors; anything not listed here falls back to
+# "calc.value" (bold green).
+CATEGORY_STYLES = {
+    "currency": "calc.currency",
+    "tonnage": "calc.tonnage",
+}
+
 REPL_HELP = """\
 Enter an expression to evaluate it. Commands:
   let NAME = EXPR   bind a variable (e.g.  let price = $12.50)
+  -                 reuse the previous answer (shorthand for 'ans')
   vars              list current variables
+  clear             clear the screen
+  reset             clear all bound variables, including ans
   help              show this message
   exit | quit       leave (Ctrl-D also works)
 Note: a plain '=' is the equality operator (qty = 3 is a comparison);
-assignment always uses 'let'."""
+assignment always uses 'let'. The result of the last plain expression
+is also available as the variable 'ans'."""
 
 
-def render_error(expression: str, error: ExpressionError) -> str:
-    """Format an ExpressionError with the caret pointer when possible."""
+def value_style(category: str) -> str:
+    return CATEGORY_STYLES.get(category, "calc.value")
 
-    lines = [f"error: {error.message}"]
+
+def styled_value(text: str, category: str) -> str:
+    style = value_style(category)
+    return f"[{style}]{text}[/{style}]"
+
+
+def print_error(expression: str, error: ExpressionError, out: Console) -> None:
+    """Print an ExpressionError with the caret pointer when possible."""
+
+    out.print(f"error: {error.message}", style="calc.error")
 
     if error.position is not None:
-        lines.append(f"    {expression}")
-        lines.append("    " + " " * error.position + "^")
+        out.print(f"    {expression}", style="calc.source")
+        out.print("    " + " " * error.position + "^", style="calc.pointer")
 
-    return "\n".join(lines)
+
+def print_result(result, out: Console, *, bare: bool = False) -> None:
+    if bare:
+        out.print(format_result(result.value), style=value_style(result.category))
+        return
+
+    out.print(
+        f"{styled_value(format_result(result.value), result.category)}"
+        f"  [calc.category]({result.category})[/calc.category]"
+    )
 
 
 def bind_variables(definitions: list[str]) -> dict:
@@ -81,20 +139,19 @@ def bind_variables(definitions: list[str]) -> dict:
         name = name.strip()
 
         if not separator or not expression.strip():
-            raise SystemExit(
-                f"error: --var expects NAME=EXPRESSION, got {definition!r}"
+            raise typer.BadParameter(
+                f"--var expects NAME=EXPRESSION, got {definition!r}"
             )
 
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
-            raise SystemExit(f"error: {name!r} is not a valid variable name")
+            raise typer.BadParameter(f"{name!r} is not a valid variable name")
 
         try:
             result = evaluate_expression(expression.strip(), variables)
         except ExpressionError as error:
-            raise SystemExit(
-                f"error in --var {name}:\n"
-                f"{render_error(expression.strip(), error)}"
-            )
+            error_console.print(f"error in --var {name}:", style="calc.error")
+            print_error(expression.strip(), error, error_console)
+            raise typer.Exit(1)
 
         variables[name] = result.value
 
@@ -105,14 +162,10 @@ def run_once(expression: str, variables: dict, bare: bool) -> int:
     try:
         result = evaluate_expression(expression, variables)
     except ExpressionError as error:
-        print(render_error(expression, error), file=sys.stderr)
+        print_error(expression, error, error_console)
         return 1
 
-    if bare:
-        print(format_result(result.value))
-    else:
-        print(f"{format_result(result.value)}  ({result.category})")
-
+    print_result(result, console, bare=bare)
     return 0
 
 
@@ -122,16 +175,16 @@ def run_repl(variables: dict) -> int:
     except ImportError:
         pass
 
-    print("calc — type 'help' for commands, 'exit' to leave.")
+    console.print("calc — type 'help' for commands, 'exit' to leave.", style="calc.info")
 
     while True:
         try:
-            line = input(PROMPT).strip()
+            line = console.input("[calc.prompt]calc>[/calc.prompt] ").strip()
         except EOFError:
-            print()
+            console.print()
             return 0
         except KeyboardInterrupt:
-            print()
+            console.print()
             continue
 
         if not line:
@@ -141,18 +194,34 @@ def run_repl(variables: dict) -> int:
             return 0
 
         if line == "help":
-            print(REPL_HELP)
+            console.print(REPL_HELP)
+            continue
+
+        if line == "clear":
+            console.clear()
+            continue
+
+        if line == "reset":
+            variables.clear()
+            console.print("All variables cleared.", style="calc.info")
             continue
 
         if line == "vars":
             if not variables:
-                print("(no variables bound — use: let NAME = EXPR)")
+                console.print(
+                    "(no variables bound — use: let NAME = EXPR)", style="calc.info"
+                )
             for name, value in sorted(variables.items()):
-                print(
-                    f"  {name} = {format_result(value)}"
-                    f"  ({category_of(value)})"
+                console.print(
+                    f"  [calc.variable]{name}[/calc.variable] = "
+                    f"{styled_value(format_result(value), category_of(value))}"
+                    f"  [calc.category]({category_of(value)})[/calc.category]"
                 )
             continue
+
+        # '-' alone reuses the last computed result, same as typing 'ans'.
+        if line == "-":
+            line = "ans"
 
         assignment = LET_RE.match(line)
 
@@ -162,73 +231,126 @@ def run_repl(variables: dict) -> int:
             try:
                 result = evaluate_expression(expression, variables)
             except ExpressionError as error:
-                print(render_error(expression, error))
+                print_error(expression, error, console)
                 continue
 
             variables[name] = result.value
-            print(
-                f"  {name} = {format_result(result.value)}"
-                f"  ({result.category})"
+            console.print(
+                f"  [calc.variable]{name}[/calc.variable] = "
+                f"{styled_value(format_result(result.value), result.category)}"
+                f"  [calc.category]({result.category})[/calc.category]"
             )
             continue
 
         try:
             result = evaluate_expression(line, variables)
         except ExpressionError as error:
-            print(render_error(line, error))
+            print_error(line, error, console)
             continue
 
-        output = f"{format_result(result.value)}  ({result.category})"
+        variables["ans"] = result.value
+
+        output = (
+            f"{styled_value(format_result(result.value), result.category)}"
+            f"  [calc.category]({result.category})[/calc.category]"
+        )
 
         if result.variables:
-            output += f"  [uses: {', '.join(result.variables)}]"
+            names = ", ".join(result.variables)
+            output += f"  [calc.info][uses: {names}][/calc.info]"
 
-        print(output)
+        console.print(output)
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="calc",
-        description=(
-            "Evaluate strongly typed spreadsheet-style expressions "
-            "(numbers, dates, times, durations, currency, tonnage, "
-            "percentages)."
+app = typer.Typer(
+    add_completion=False,
+    rich_markup_mode="rich",
+    help=(
+        "Evaluate strongly typed spreadsheet-style expressions "
+        "(numbers, dates, times, durations, currency, tonnage, "
+        "percentages).\n\n"
+        "With no EXPRESSION, an interactive REPL starts. Quote "
+        "expressions in the shell: symbols like $, *, and parentheses "
+        "are shell metacharacters."
+    ),
+)
+
+
+@app.command()
+def main(
+    expression: Annotated[
+        str | None,
+        typer.Argument(help="expression to evaluate once (omit to start the REPL)"),
+    ] = None,
+    var: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--var",
+            metavar="NAME=EXPR",
+            help=(
+                "bind a variable before evaluating; the value is itself an "
+                "expression (repeatable, later ones may use earlier ones)"
+            ),
         ),
-        epilog=(
-            "With no EXPRESSION, an interactive REPL starts. "
-            "Quote expressions in the shell: symbols like $, *, and "
-            "parentheses are shell metacharacters."
-        ),
-    )
-    parser.add_argument(
-        "expression",
-        nargs="?",
-        help="expression to evaluate once (omit to start the REPL)",
-    )
-    parser.add_argument(
-        "--var",
-        action="append",
-        default=[],
-        metavar="NAME=EXPR",
-        help=(
-            "bind a variable before evaluating; the value is itself an "
-            "expression (repeatable, later ones may use earlier ones)"
-        ),
-    )
-    parser.add_argument(
-        "--bare",
-        action="store_true",
-        help="print only the formatted value (no type), for scripting",
-    )
+    ] = None,
+    bare: Annotated[
+        bool,
+        typer.Option("--bare", help="print only the formatted value (no type), for scripting"),
+    ] = False,
+) -> None:
+    variables = bind_variables(var or [])
 
-    arguments = parser.parse_args(argv)
-    variables = bind_variables(arguments.var)
+    if expression is not None:
+        raise typer.Exit(run_once(expression, variables, bare))
 
-    if arguments.expression is not None:
-        return run_once(arguments.expression, variables, arguments.bare)
+    raise typer.Exit(run_repl(variables))
 
-    return run_repl(variables)
+
+KNOWN_FLAGS = {"--bare", "--help"}
+KNOWN_VALUE_OPTIONS = {"--var"}
+
+
+def _looks_like_known_option(token: str) -> bool:
+    name = token.split("=", 1)[0]
+    return name in KNOWN_FLAGS or name in KNOWN_VALUE_OPTIONS
+
+
+def normalize_argv(argv: list[str]) -> list[str]:
+    """Let an expression starting with '-' (e.g. "-5 + 3") be typed as
+    a normal argument.
+
+    Click otherwise mistakes a leading '-' for an unknown option
+    (``No such option: -5``) since it can't tell an expression from a
+    flag. The fix is the POSIX '--' end-of-options marker; this
+    inserts it automatically in front of the first token that isn't
+    one of calc's own options, so users don't have to know about it.
+    """
+
+    normalized: list[str] = []
+
+    for index, token in enumerate(argv):
+        if normalized and normalized[-1] == "--var":
+            normalized.append(token)
+            continue
+
+        if token == "--":
+            normalized.extend(argv[index:])
+            return normalized
+
+        if _looks_like_known_option(token):
+            normalized.append(token)
+            continue
+
+        if not token.startswith("-") or token == "-":
+            normalized.append(token)
+            continue
+
+        normalized.append("--")
+        normalized.extend(argv[index:])
+        return normalized
+
+    return normalized
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    app(args=normalize_argv(sys.argv[1:]))
