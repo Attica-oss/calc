@@ -7,10 +7,10 @@ CLI both import from here, so this file is the single source of truth.
 import calendar
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import (
-    ROUND_CEILING,
     ROUND_HALF_UP,
     Decimal,
     DivisionByZero,
@@ -18,12 +18,10 @@ from decimal import (
     Overflow,
 )
 from enum import Enum
-from typing import TypeAlias
-from collections.abc import Callable
 
 # Type Aliases
-Number: TypeAlias = int | Decimal
-Temporal: TypeAlias = date | datetime | time
+type Number = int | Decimal
+type Temporal = date | datetime | time
 
 
 # ------------------------------------------------------------------
@@ -76,7 +74,7 @@ class Unit(Enum):
 UNIT_QUANTA = {
     Unit.CURRENCY: Decimal("0.01"),
     Unit.TONNAGE: Decimal("0.001"),
-    Unit.PERCENT: Decimal("0.000001"),  # 0.0001% precision
+    Unit.PERCENT: Decimal("0.000001"),
 }
 
 
@@ -121,6 +119,22 @@ class Quantity:
         )
 
 
+@dataclass(frozen=True)
+class Complex:
+    """A complex number a + bi.
+
+    Unlike Quantity, this is not quantized to a fixed number of
+    decimal places: real and imaginary parts behave like plain
+    decimals, at whatever precision arithmetic produced. Complex
+    numbers have no total order, so (unlike numbers, currency, or
+    tonnage) they support equality only, the same restriction already
+    applied to Duration.
+    """
+
+    real: Decimal
+    imag: Decimal
+
+
 # ---- The type system's vocabulary --------------------------------
 
 
@@ -149,6 +163,9 @@ def category_of(value) -> str:
     if isinstance(value, Duration):
         return "duration"
 
+    if isinstance(value, Complex):
+        return "complex"
+
     if isinstance(value, Quantity):
         return value.unit.value
 
@@ -166,6 +183,7 @@ CATEGORY_LABELS = {
     "currency": "a currency amount",
     "tonnage": "a tonnage",
     "percent": "a percentage",
+    "complex": "a complex number",
 }
 
 
@@ -330,6 +348,14 @@ TOKEN_RE = re.compile(
         # '%' with whitespace before it stays the modulo operator.
         (?:\d+(?:\.\d*)?|\.\d+)
         %
+    )
+    |
+    (?P<IMAGINARY>
+        # A number immediately followed by 'i' is a pure-imaginary
+        # literal (3 + 4i). A bare 'i' with no glued digits stays a
+        # perfectly ordinary variable name, same as bare 't'.
+        (?:\d+(?:\.\d*)?|\.\d+)
+        i
     )
     |
     (?P<NUMBER>
@@ -695,6 +721,14 @@ class Parser:
                     Decimal(token.value[:-1]) / 100,
                     Unit.PERCENT,
                 ),
+                position=token.position,
+            )
+
+        if token.kind == "IMAGINARY":
+            self.advance()
+
+            return Literal(
+                value=Complex(Decimal(0), Decimal(token.value[:-1])),
                 position=token.position,
             )
 
@@ -1132,6 +1166,79 @@ register_binary("/", "percent", "percent", "decimal", quantity_ratio)
 # $100 + 5% (grow-by) is deliberately a type error: it reads two
 # ways, so we make the user write $100 * 5% + $100 or similar.
 
+
+# ---- Complex numbers -----------------------------------------------
+#
+# A plain number embeds into the complex plane as itself + 0i. Each
+# rule below converts both operands first, then does the standard
+# complex-number formula — the conversion is what lets `3 + 4i` and
+# `4i + 3` and `(1+2i) * 3` all resolve through the same handful of
+# functions instead of a combinatorial number of cross-type rules.
+
+
+def as_complex(value) -> Complex:
+    if isinstance(value, Complex):
+        return value
+
+    return Complex(to_decimal(value), Decimal(0))
+
+
+def complex_add(a, b):
+    a, b = as_complex(a), as_complex(b)
+    return Complex(a.real + b.real, a.imag + b.imag)
+
+
+def complex_subtract(a, b):
+    a, b = as_complex(a), as_complex(b)
+    return Complex(a.real - b.real, a.imag - b.imag)
+
+
+def complex_multiply(a, b):
+    a, b = as_complex(a), as_complex(b)
+    return Complex(
+        a.real * b.real - a.imag * b.imag,
+        a.real * b.imag + a.imag * b.real,
+    )
+
+
+def complex_divide(a, b):
+    a, b = as_complex(a), as_complex(b)
+    denominator = b.real * b.real + b.imag * b.imag
+    _nonzero(denominator)
+
+    return Complex(
+        (a.real * b.real + a.imag * b.imag) / denominator,
+        (a.imag * b.real - a.real * b.imag) / denominator,
+    )
+
+
+register_binary("+", "complex", "complex", "complex", complex_add)
+register_binary("+", "complex", "number", "complex", complex_add, symmetric=True)
+
+# Subtraction and division aren't commutative, so both directions are
+# registered explicitly rather than via symmetric=True — but the
+# formula functions themselves don't need a swapped variant, because
+# as_complex() converts each operand in place and the formula already
+# respects argument order (a - b, not b - a).
+register_binary("-", "complex", "complex", "complex", complex_subtract)
+register_binary("-", "complex", "number", "complex", complex_subtract)
+register_binary("-", "number", "complex", "complex", complex_subtract)
+
+register_binary("*", "complex", "complex", "complex", complex_multiply)
+register_binary("*", "complex", "number", "complex", complex_multiply, symmetric=True)
+
+register_binary("/", "complex", "complex", "complex", complex_divide)
+register_binary("/", "complex", "number", "complex", complex_divide)
+register_binary("/", "number", "complex", "complex", complex_divide)
+
+# Complex numbers have no total order, same restriction as Duration:
+# only = and <> are registered below, in the comparisons section.
+# There's also no complex == number rule, matching how currency and
+# tonnage never compare against a bare number either — 4+0i and 4
+# share a value but not a type, and the checker treats that as two
+# different kinds of thing, consistently with every other unit type.
+
+
 # ---- Comparisons -------------------------------------------------
 
 
@@ -1161,8 +1268,10 @@ for _category in (
         register_binary(_op, _category, _category, "boolean", _impl)
 
 # Durations have no canonical total order (is 1mo more than 30d?),
-# so they support equality only. Booleans likewise.
-for _category in ("duration", "boolean"):
+# so they support equality only. Booleans and complex numbers
+# likewise (complex numbers have no order compatible with the field
+# operations at all).
+for _category in ("duration", "boolean", "complex"):
     register_binary("=", _category, _category, "boolean", _COMPARATORS["="])
     register_binary("<>", _category, _category, "boolean", _COMPARATORS["<>"])
 
@@ -1174,6 +1283,10 @@ for _numeric_category in NUMERIC:
 
 register_unary("-", "duration", "duration", negate_duration)
 register_unary("+", "duration", "duration", lambda v: v)
+
+register_unary("-", "complex", "complex", lambda c: Complex(-c.real, -c.imag))
+register_unary("+", "complex", "complex", lambda c: c)
+
 
 for _unit_category in ("currency", "tonnage", "percent"):
     register_unary(
@@ -1215,6 +1328,16 @@ def _fixed(category):
 
 NUMERIC_CATEGORIES = {"int", "decimal"}
 
+
+# Hardcoded to 50 significant digits — comfortably past Decimal's
+# default 28-digit context precision, so results built from these
+# constants are limited by the *arithmetic's* precision, not the
+# constant's. Not computed at runtime: there's no benefit to deriving
+# pi via a series each call when the digits never change.
+PI = Decimal("3.14159265358979323846264338327950288419716939937511")
+E = Decimal("2.71828182845904523536028747135266249775724709369996")
+
+
 # ---- today / now / time ------------------------------------------
 
 
@@ -1242,6 +1365,12 @@ def _time_impl(values):
 def _abs_result(categories, node):
     category = categories[0]
 
+    # The modulus of a complex number is a plain decimal, not another
+    # complex number — the one case where abs()'s result category
+    # differs from its argument's.
+    if category == "complex":
+        return "decimal"
+
     if category in NUMERIC_CATEGORIES | {
         "duration",
         "currency",
@@ -1250,11 +1379,18 @@ def _abs_result(categories, node):
     }:
         return category
 
-    _fail(node, "abs() accepts a number, duration, or quantity.")
+    _fail(node, "abs() accepts a number, duration,  quantity, or complex.")
 
 
 def _abs_impl(values):
     value = values[0]
+
+    if isinstance(value, Complex):
+        # Decimal.sqrt() is correctly rounded to the current context
+        # precision (28 significant digits by default) — deterministic,
+        # no binary-float error, same precision model as division.
+        magnitude_squared = value.real * value.real + value.imag * value.imag
+        return magnitude_squared.sqrt()
 
     if isinstance(value, Quantity):
         return Quantity(abs(value.value), value.unit)
@@ -1302,103 +1438,6 @@ def _round_impl(values):
         raise ExpressionError("The number of decimal places is too large.")
 
     return round(values[0], digits)
-
-
-# ---- ceil ----------------------------------------------------------
-#
-# Excel-style CEILING: round a value up to the nearest multiple of a
-# second argument (the "significance"), rather than to a fixed number
-# of decimal places like round(). This is what makes it work for
-# durations — "round this duration up to the nearest hour" is
-# ceil(duration, 1h) — and for quantities, e.g. ceil($12.30, $0.50).
-
-
-def _require_positive_significance(value):
-    if value <= 0:
-        raise ExpressionError(
-            "ceil()'s second argument (the multiple to round up to) "
-            "must be positive."
-        )
-
-
-def _ceil_multiple(value: Decimal, significance: Decimal) -> Decimal:
-    quotient = (value / significance).to_integral_value(rounding=ROUND_CEILING)
-    return quotient * significance
-
-
-def _duration_total_seconds(duration: Duration) -> int:
-    return duration.days * 86_400 + duration.seconds
-
-
-def _duration_from_total_seconds(total_seconds: int) -> Duration:
-    days, seconds = divmod(abs(total_seconds), 86_400)
-
-    if total_seconds < 0:
-        days = -days
-        seconds = -seconds
-
-    return Duration(days=days, seconds=seconds)
-
-
-def _ceil_duration(value: Duration, significance: Duration) -> Duration:
-    if value.months or significance.months:
-        raise ExpressionError(
-            "ceil() can't use calendar months in a duration: a month "
-            "has no fixed length. Use weeks, days, hours, minutes, "
-            "or seconds instead."
-        )
-
-    significance_seconds = _duration_total_seconds(significance)
-    _require_positive_significance(significance_seconds)
-
-    value_seconds = _duration_total_seconds(value)
-    quotient, remainder = divmod(value_seconds, significance_seconds)
-
-    if remainder:
-        quotient += 1
-
-    return _duration_from_total_seconds(quotient * significance_seconds)
-
-
-def _ceil_result(categories, node):
-    value_category, significance_category = categories
-
-    if value_category in NUMERIC_CATEGORIES and significance_category in NUMERIC_CATEGORIES:
-        return numeric_result(value_category, significance_category)
-
-    if value_category == "duration" and significance_category == "duration":
-        return "duration"
-
-    if (
-        value_category in {"currency", "tonnage", "percent"}
-        and significance_category == value_category
-    ):
-        return value_category
-
-    _fail(
-        node,
-        "ceil()'s second argument must be the same kind of value as "
-        "the first — a matching duration or quantity, or a number.",
-    )
-
-
-def _ceil_impl(values):
-    value, significance = values
-
-    if isinstance(value, Duration):
-        return _ceil_duration(value, significance)
-
-    if isinstance(value, Quantity):
-        _require_positive_significance(significance.value)
-        return Quantity(_ceil_multiple(value.value, significance.value), value.unit)
-
-    _require_positive_significance(significance)
-    result = _ceil_multiple(to_decimal(value), to_decimal(significance))
-
-    if isinstance(value, int) and isinstance(significance, int):
-        return int(result)
-
-    return result
 
 
 # ---- min / max ---------------------------------------------------
@@ -1450,7 +1489,7 @@ def _min_max_impl(chooser):
 
 # ---- sum / avg ---------------------------------------------------
 
-_SUMMABLE = {"currency", "tonnage", "percent", "duration"}
+_SUMMABLE = {"currency", "tonnage", "percent", "duration", "complex"}
 
 
 def _sum_result(categories, node):
@@ -1465,7 +1504,7 @@ def _sum_result(categories, node):
     _fail(
         node,
         "sum() arguments must all be numbers, or all the same "
-        "quantity or duration type.",
+        "quantity , duration, or complex type.",
     )
 
 
@@ -1483,6 +1522,12 @@ def _sum_impl(values):
             seconds=sum(value.seconds for value in values),
         )
 
+    if isinstance(first, Complex):
+        return Complex(
+            sum((value.real for value in values), Decimal(0)),
+            sum((value.imag for value in values), Decimal(0)),
+        )
+
     return sum(values)
 
 
@@ -1492,7 +1537,7 @@ def _avg_result(categories, node):
 
     first = categories[0]
 
-    if first in {"currency", "tonnage", "percent"} and all(
+    if first in {"currency", "tonnage", "percent", "complex"} and all(
         category == first for category in categories
     ):
         return first
@@ -1511,8 +1556,39 @@ def _avg_impl(values):
         total = sum((value.value for value in values), Decimal(0))
         return Quantity(total / count, first.unit)
 
+    if isinstance(first, Complex):
+        real_total = sum((value.real for value in values), Decimal(0))
+        imag_total = sum((value.imag for value in values), Decimal(0))
+        return Complex(real_total / count, imag_total / count)
+
     total = sum((to_decimal(value) for value in values), Decimal(0))
     return total / count
+
+
+# ---- re / im / conj -----------------------------------------------
+
+
+def _complex_only_result(name):
+    def result_type(categories, node):
+        if categories[0] != "complex":
+            _fail(node, f"{name}() requires a complex number.")
+
+        return "decimal" if name in {"re", "im"} else "complex"
+
+    return result_type
+
+
+def _re_impl(values):
+    return values[0].real
+
+
+def _im_impl(values):
+    return values[0].imag
+
+
+def _conj_impl(values):
+    value = values[0]
+    return Complex(value.real, -value.imag)
 
 
 # ---- if (lazy) ---------------------------------------------------
@@ -1567,10 +1643,17 @@ FUNCTIONS = {
         _fixed("datetime"),
         lambda values: datetime.now().replace(microsecond=0),
     ),
+    # Zero-arg functions, same shape as today()/now(): this sidesteps
+    # the question of whether PI should be a reserved bare identifier
+    # (and risk shadowing a variable someone names "pi") by requiring
+    # the call syntax, exactly like every other built-in constant-ish
+    # value here. Names are lowercased during parsing, so PI(), Pi(),
+    # and pi() all resolve to the same entry.
+    "pi": FunctionSpec("pi", 0, 0, False, _fixed("decimal"), lambda values: PI),
+    "e": FunctionSpec("e", 0, 0, False, _fixed("decimal"), lambda values: E),
     "time": FunctionSpec("time", 2, 3, False, _time_result, _time_impl),
     "abs": FunctionSpec("abs", 1, 1, False, _abs_result, _abs_impl),
     "round": FunctionSpec("round", 1, 2, False, _round_result, _round_impl),
-    "ceil": FunctionSpec("ceil", 2, 2, False, _ceil_result, _ceil_impl),
     "min": FunctionSpec(
         "min", 1, None, False, _min_max_result("min"), _min_max_impl(min)
     ),
@@ -1579,6 +1662,9 @@ FUNCTIONS = {
     ),
     "sum": FunctionSpec("sum", 1, None, False, _sum_result, _sum_impl),
     "avg": FunctionSpec("avg", 1, None, False, _avg_result, _avg_impl),
+    "re": FunctionSpec("re", 1, 1, False, _complex_only_result("re"), _re_impl),
+    "im": FunctionSpec("im", 1, 1, False, _complex_only_result("im"), _im_impl),
+    "conj": FunctionSpec("conj", 1, 1, False, _complex_only_result("conj"), _conj_impl),
     "if": FunctionSpec("if", 3, 3, True, _if_result, _if_impl),
     "days_between": FunctionSpec(
         "days_between",
@@ -1826,11 +1912,31 @@ def format_decimal(value: Decimal) -> str:
 
     return text or "0"
 
+def format_complex(value: Complex) -> str:
+    # Category stays "complex" regardless of the values (13+0i keeps
+    # its type even though its imaginary part vanished), but display
+    # drops a zero part for readability — matching how -$5 displays
+    # as "-$5.00" rather than "$-5.00": the type system and the
+    # formatter are allowed to disagree about what's worth showing.
+    if value.imag == 0:
+        return format_decimal(value.real)
+
+    imaginary_text = format_decimal(abs(value.imag))
+    sign = "-" if value.imag < 0 else "+"
+
+    if value.real == 0:
+        prefix = "-" if value.imag < 0 else ""
+        return f"{prefix}{imaginary_text}i"
+
+    return f"{format_decimal(value.real)}{sign}{imaginary_text}i"
 
 def format_result(value) -> str:
     # bool is a subclass of int: check it first.
     if isinstance(value, bool):
         return "TRUE" if value else "FALSE"
+
+    if isinstance(value, Complex):
+        return format_complex(value)
 
     if isinstance(value, Quantity):
         if value.unit is Unit.CURRENCY:
@@ -1840,7 +1946,7 @@ def format_result(value) -> str:
         if value.unit is Unit.PERCENT:
             return f"{format_decimal(value.value * 100)}%"
 
-        return f"{format_decimal(value.value)} t"
+        return f"{format_decimal(value.value):,.3f} t"
 
     if is_datetime(value):
         return value.isoformat(sep=" ", timespec="seconds")
@@ -1864,6 +1970,7 @@ def format_result(value) -> str:
 
 
 __all__ = [
+    "Complex",
     "Duration",
     "EvaluationResult",
     "ExpressionError",
