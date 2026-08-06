@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import (
+    ROUND_CEILING,
     ROUND_HALF_UP,
     Decimal,
     DivisionByZero,
@@ -112,11 +113,19 @@ class Quantity:
     unit: Unit
 
     def __post_init__(self):
-        object.__setattr__(
-            self,
-            "value",
-            self.value.quantize(UNIT_QUANTA[self.unit], ROUND_HALF_UP),
-        )
+        try:
+            quantized = self.value.quantize(UNIT_QUANTA[self.unit], ROUND_HALF_UP)
+        except InvalidOperation as error:
+            # Decimal.quantize() rejects Infinity outright (there's no
+            # finite number of decimal places to round it to). Caught
+            # here rather than left to leak as a raw traceback — e.g.
+            # $5 * infinity() should fail with a clear message, not an
+            # uncaught InvalidOperation three layers down.
+            raise ExpressionError(
+                f"{label(self.unit.value)} can't be infinite."
+            ) from error
+
+        object.__setattr__(self, "value", quantized)
 
 
 @dataclass(frozen=True)
@@ -133,6 +142,29 @@ class Complex:
 
     real: Decimal
     imag: Decimal
+
+
+@dataclass(frozen=True)
+class Blank:
+    """The single 'missing value' marker.
+
+    Plays the role SQL's NULL, a blank spreadsheet cell, and IEEE
+    NaN would separately play in other systems — one sentinel instead
+    of three, since this engine doesn't have a binary-float NaN to
+    keep distinct from "missing" in the first place (division by
+    zero and other invalid numeric ops already raise ExpressionError
+    rather than silently producing a special value; see numeric_divide
+    and friends below).
+
+    Blank is deliberately unregistered in the dispatch table: no
+    arithmetic, no cross-category comparison. That's the "type safe"
+    part — `blank() + 5` is a compile-time error, not a silent 0 or a
+    propagated blank, so you can't accidentally let a missing value
+    poison a calculation. isblank() and coalesce() are the two
+    sanctioned ways to interact with it (see the function registry).
+    A frozen dataclass with no fields gives correct equality (every
+    Blank() equals every other Blank()) with no extra code.
+    """
 
 
 # ---- The type system's vocabulary --------------------------------
@@ -166,6 +198,9 @@ def category_of(value) -> str:
     if isinstance(value, Complex):
         return "complex"
 
+    if isinstance(value, Blank):
+        return "blank"
+
     if isinstance(value, Quantity):
         return value.unit.value
 
@@ -184,6 +219,7 @@ CATEGORY_LABELS = {
     "tonnage": "a tonnage",
     "percent": "a percentage",
     "complex": "a complex number",
+    "blank": "a blank value",
 }
 
 
@@ -357,6 +393,8 @@ TOKEN_RE = re.compile(
         (?:\d+(?:\.\d*)?|\.\d+)
         i
     )
+    |
+    (?P<INFINITY_SYMBOL>\u221e)
     |
     (?P<NUMBER>
         (?:\d+(?:\.\d*)?|\.\d+)
@@ -731,6 +769,10 @@ class Parser:
                 value=Complex(Decimal(0), Decimal(token.value[:-1])),
                 position=token.position,
             )
+        if token.kind == "INFINITY_SYMBOL":
+            self.advance()
+
+            return Literal(value=INFINITY, position=token.position)
 
         if token.kind == "DATETIME":
             self.advance()
@@ -902,6 +944,42 @@ def numeric_result(left_cat, right_cat):
 def _nonzero(value):
     if value == 0:
         raise ExpressionError("Cannot divide by zero.")
+
+
+def _guard_indeterminate(compute):
+    """Run a numeric operator, turning an indeterminate form (inf - inf,
+    inf / inf, 0 * inf, ...) into a clear ExpressionError instead of
+    letting Python's decimal.InvalidOperation leak out raw.
+
+    Deliberately an error rather than a silently-returned Blank: the
+    type checker already promised a definite numeric category for
+    this expression before evaluation ran, and honoring that promise
+    — never handing back a value whose actual category disagrees with
+    what was statically declared — is the whole point of "type safe"
+    here. Blank only ever appears where you explicitly asked for it,
+    via blank().
+    """
+
+    try:
+        return compute()
+    except InvalidOperation as error:
+        raise ExpressionError(
+            "This is an indeterminate form involving infinity "
+            "(\u221e \u2212 \u221e, \u221e / \u221e, or 0 \u00d7 \u221e) "
+            "and has no defined result."
+        ) from error
+
+
+def numeric_add(a, b):
+    return _guard_indeterminate(lambda: a + b)
+
+
+def numeric_subtract(a, b):
+    return _guard_indeterminate(lambda: a - b)
+
+
+def numeric_multiply(a, b):
+    return _guard_indeterminate(lambda: a * b)
 
 
 def numeric_divide(a, b):
@@ -1270,8 +1348,11 @@ for _category in (
 # Durations have no canonical total order (is 1mo more than 30d?),
 # so they support equality only. Booleans and complex numbers
 # likewise (complex numbers have no order compatible with the field
-# operations at all).
-for _category in ("duration", "boolean", "complex"):
+# operations at all). Blank compares equal only to itself — blank()
+# vs. any other category is a type error, same as every other
+# cross-category comparison; isblank() is the intended way to test a
+# value of unknown/generic type for blankness.
+for _category in ("duration", "boolean", "complex", "blank"):
     register_binary("=", _category, _category, "boolean", _COMPARATORS["="])
     register_binary("<>", _category, _category, "boolean", _COMPARATORS["<>"])
 
@@ -1337,6 +1418,13 @@ NUMERIC_CATEGORIES = {"int", "decimal"}
 PI = Decimal("3.14159265358979323846264338327950288419716939937511")
 E = Decimal("2.71828182845904523536028747135266249775724709369996")
 
+# Python's Decimal has genuine IEEE-854 Infinity built in, so this is
+# just a Decimal value — every dispatch rule already registered for
+# "decimal" (comparisons, unary minus, min/max, abs, ...) works on it
+# for free. Undefined arithmetic on it (inf - inf, inf / inf, 0 * inf)
+# is guarded in numeric_add/subtract/multiply/divide/modulo above via
+# _guard_indeterminate.
+INFINITY = Decimal("Infinity")
 
 # ---- today / now / time ------------------------------------------
 
@@ -1591,6 +1679,124 @@ def _conj_impl(values):
     return Complex(value.real, -value.imag)
 
 
+# ---- ceil -----------------------------------------------------------
+#
+# Excel's CEILING, not a plain math ceiling: it needs a second
+# argument to round up *to*, since "round up" alone is meaningless for
+# a duration or a currency amount (round up to what — the nearest
+# cent? the nearest dollar?). x and multiple must be the same kind of
+# value; the result keeps that type.
+
+
+def _ceil_result(categories, node):
+    x_category, multiple_category = categories
+
+    if x_category != multiple_category:
+        _fail(node, "ceil() requires x and multiple to be the same kind of value.")
+
+    if x_category in NUMERIC_CATEGORIES:
+        return "int" if x_category == "int" else "decimal"
+
+    if x_category in {"currency", "tonnage", "percent", "duration"}:
+        return x_category
+
+    _fail(node, "ceil() accepts numbers, quantities, or durations.")
+
+
+def _ceil_number(x, multiple):
+    multiple_decimal = to_decimal(multiple)
+
+    if multiple_decimal <= 0:
+        raise ExpressionError("ceil()'s multiple must be positive.")
+
+    quotient = _guard_indeterminate(
+        lambda: (to_decimal(x) / multiple_decimal).to_integral_value(
+            rounding=ROUND_CEILING
+        )
+    )
+    result = quotient * multiple_decimal
+
+    if isinstance(x, int) and isinstance(multiple, int):
+        return int(result)
+
+    return result
+
+
+def _ceil_quantity(x: Quantity, multiple: Quantity):
+    if multiple.value <= 0:
+        raise ExpressionError("ceil()'s multiple must be positive.")
+
+    quotient = (x.value / multiple.value).to_integral_value(rounding=ROUND_CEILING)
+    return Quantity(quotient * multiple.value, x.unit)
+
+
+def _ceil_duration(x: Duration, multiple: Duration):
+    if x.months or multiple.months:
+        raise ExpressionError(
+            "ceil() can't use a duration that includes calendar months or "
+            "years against a multiple, since they have no fixed length."
+        )
+
+    multiple_seconds = multiple.days * 86_400 + multiple.seconds
+
+    if multiple_seconds <= 0:
+        raise ExpressionError("ceil()'s multiple must be positive.")
+
+    total_seconds = x.days * 86_400 + x.seconds
+    # Integer ceiling division: -(-a // b) == ceil(a / b) for b > 0,
+    # and works correctly for negative a too via Python's floor //.
+    quotient = -(-total_seconds // multiple_seconds)
+
+    return timedelta_to_duration(timedelta(seconds=quotient * multiple_seconds))
+
+
+def _ceil_impl(values):
+    x, multiple = values
+
+    if isinstance(x, Duration):
+        return _ceil_duration(x, multiple)
+
+    if isinstance(x, Quantity):
+        return _ceil_quantity(x, multiple)
+
+    return _ceil_number(x, multiple)
+
+
+# ---- blank / isblank / coalesce -------------------------------------
+#
+# isblank() is deliberately the one function in this registry with no
+# restriction on its argument's category — it has to accept anything,
+# since the whole point is testing a value of unknown type. Every
+# other function here validates its argument categories; this is the
+# documented exception.
+
+
+def _isblank_result(categories, node):
+    return "boolean"
+
+
+def _isblank_impl(values):
+    return isinstance(values[0], Blank)
+
+
+def _coalesce_result(categories, node):
+    x_category, default_category = categories
+
+    if x_category not in ("blank", default_category):
+        _fail(
+            node,
+            "coalesce()'s first argument must be blank or the same "
+            "type as the default.",
+        )
+
+    return default_category
+
+
+def _coalesce_impl(values):
+    x, default = values
+    return default if isinstance(x, Blank) else x
+
+
 # ---- if (lazy) ---------------------------------------------------
 
 
@@ -1651,9 +1857,13 @@ FUNCTIONS = {
     # and pi() all resolve to the same entry.
     "pi": FunctionSpec("pi", 0, 0, False, _fixed("decimal"), lambda values: PI),
     "e": FunctionSpec("e", 0, 0, False, _fixed("decimal"), lambda values: E),
+    "infinity": FunctionSpec(
+        "infinity", 0, 0, False, _fixed("decimal"), lambda values: INFINITY
+    ),
     "time": FunctionSpec("time", 2, 3, False, _time_result, _time_impl),
     "abs": FunctionSpec("abs", 1, 1, False, _abs_result, _abs_impl),
     "round": FunctionSpec("round", 1, 2, False, _round_result, _round_impl),
+    "ceil": FunctionSpec("ceil", 2, 2, False, _ceil_result, _ceil_impl),
     "min": FunctionSpec(
         "min", 1, None, False, _min_max_result("min"), _min_max_impl(min)
     ),
@@ -1665,6 +1875,15 @@ FUNCTIONS = {
     "re": FunctionSpec("re", 1, 1, False, _complex_only_result("re"), _re_impl),
     "im": FunctionSpec("im", 1, 1, False, _complex_only_result("im"), _im_impl),
     "conj": FunctionSpec("conj", 1, 1, False, _complex_only_result("conj"), _conj_impl),
+    "blank": FunctionSpec(
+        "blank", 0, 0, False, _fixed("blank"), lambda values: Blank()
+    ),
+    "isblank": FunctionSpec(
+        "isblank", 1, 1, False, _isblank_result, _isblank_impl
+    ),
+    "coalesce": FunctionSpec(
+        "coalesce", 2, 2, False, _coalesce_result, _coalesce_impl
+    ),
     "if": FunctionSpec("if", 3, 3, True, _if_result, _if_impl),
     "days_between": FunctionSpec(
         "days_between",
@@ -1905,12 +2124,15 @@ def format_duration(value: Duration) -> str:
 
 
 def format_decimal(value: Decimal) -> str:
+    if value.is_infinite():
+        return "-\u221e" if value < 0 else "\u221e"
     text = f"{value:,f}"
 
     if "." in text:
         text = text.rstrip("0").rstrip(".")
 
     return text or "0"
+
 
 def format_complex(value: Complex) -> str:
     # Category stays "complex" regardless of the values (13+0i keeps
@@ -1930,10 +2152,14 @@ def format_complex(value: Complex) -> str:
 
     return f"{format_decimal(value.real)}{sign}{imaginary_text}i"
 
+
 def format_result(value) -> str:
     # bool is a subclass of int: check it first.
     if isinstance(value, bool):
-        return "TRUE" if value else "FALSE"
+        return "TRUE" if value else "FALSE" # Check if we can change to lowercase true and false
+
+    if isinstance(value, Blank):
+        return "blank" # Check if we can change to 'null'
 
     if isinstance(value, Complex):
         return format_complex(value)
@@ -1946,7 +2172,7 @@ def format_result(value) -> str:
         if value.unit is Unit.PERCENT:
             return f"{format_decimal(value.value * 100)}%"
 
-        return f"{format_decimal(value.value):,.3f} t"
+        return f"{value.value:,.3f} t" # Tonnage
 
     if is_datetime(value):
         return value.isoformat(sep=" ", timespec="seconds")
@@ -1970,6 +2196,7 @@ def format_result(value) -> str:
 
 
 __all__ = [
+    "Blank",
     "Complex",
     "Duration",
     "EvaluationResult",

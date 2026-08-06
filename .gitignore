@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# marimo's auto_download=["html"] writes a snapshot here on every save;
+# it's a build artifact, not source.
+src/__marimo__/

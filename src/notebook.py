@@ -10,6 +10,8 @@ with app.setup:
     import marimo as mo
 
     from engine_cli import (
+        Blank,
+        Complex,
         Duration,
         ExpressionError,
         Quantity,
@@ -81,7 +83,7 @@ def _():
     _check("$10 / 4", Quantity(Decimal("2.50"), Unit.CURRENCY), "currency")
     _check("$10 / $4", Decimal("2.5"), "decimal")
     _check("3 * 1.5t", Quantity(Decimal("4.5"), Unit.TONNAGE), "tonnage")
-    _check("-$5", Quantity(Decimal("-5"), Unit.CURRENCY), "currency")
+    _check("-$5", Quantity(Decimal(-5), Unit.CURRENCY), "currency")
     _check(
         "sum($1.10, $2.20, $3.30)",
         Quantity(Decimal("6.60"), Unit.CURRENCY),
@@ -89,11 +91,11 @@ def _():
     )
 
     # Currency x tonnage: currency behaves as an implicit per-tonne rate.
-    _check("$450 * 2.4t", Quantity(Decimal("1080"), Unit.CURRENCY), "currency")
-    _check("2.4t * $450", Quantity(Decimal("1080"), Unit.CURRENCY), "currency")
+    _check("$450 * 2.4t", Quantity(Decimal(1080), Unit.CURRENCY), "currency")
+    _check("2.4t * $450", Quantity(Decimal(1080), Unit.CURRENCY), "currency")
     _check(
         "price * shipment",
-        Quantity(Decimal("30"), Unit.CURRENCY),
+        Quantity(Decimal(30), Unit.CURRENCY),
         "currency",
         {
             "price": Quantity(Decimal("12.50"), Unit.CURRENCY),
@@ -148,7 +150,7 @@ def _():
     # Percentages: lexed as literals, applied via *.
     _check("$5.2 * 1.5%", Quantity(Decimal("0.08"), Unit.CURRENCY), "currency")
     _check("1.5% * $5.2", Quantity(Decimal("0.08"), Unit.CURRENCY), "currency")
-    _check("200 * 10%", Decimal("20"), "decimal")
+    _check("200 * 10%", Decimal(20), "decimal")
     _check("5% + 2.5%", Quantity(Decimal("0.075"), Unit.PERCENT), "percent")
     _check("50% * 10%", Quantity(Decimal("0.05"), Unit.PERCENT), "percent")
     _check("3% / 2", Quantity(Decimal("0.015"), Unit.PERCENT), "percent")
@@ -158,6 +160,74 @@ def _():
     _check("7 % 3", 1, "int")  # modulo unchanged when % stands alone
     assert format_result(evaluate_expression("5% + 2.5%").value) == "7.5%"
     _expect_error("$5 + 5%", "not defined")  # grow-by is intentionally out
+
+    # Complex numbers: 'i' glued to a number is a literal; bare 'i' is
+    # still an ordinary variable name, the same rule as bare 't'.
+    _check("4i", Complex(Decimal(0), Decimal(4)), "complex")
+    _check("3 + 4i", Complex(Decimal(3), Decimal(4)), "complex")
+    _check("2i * 2i", Complex(Decimal(-4), Decimal(0)), "complex")  # i^2 = -1
+    _check(
+        "(3+4i) / (1+2i)", Complex(Decimal("2.2"), Decimal("-0.4")), "complex"
+    )
+    _check("re(3+4i)", Decimal(3), "decimal")
+    _check("im(3+4i)", Decimal(4), "decimal")
+    _check("conj(3+4i)", Complex(Decimal(3), Decimal(-4)), "complex")
+    _check("abs(3+4i)", Decimal(5), "decimal")  # 3-4-5 triangle
+    _check("i + t", 7, "int", {"i": 3, "t": 4})
+    _expect_error("(1+2i) < (3+4i)", "not defined")  # no total order
+    _expect_error("re(5)", "requires a complex number")
+
+    # Constants: zero-arg functions, same shape as today()/now().
+    _check(
+        "pi()",
+        Decimal("3.14159265358979323846264338327950288419716939937511"),
+        "decimal",
+    )
+    _check(
+        "e()",
+        Decimal("2.71828182845904523536028747135266249775724709369996"),
+        "decimal",
+    )
+
+    # Blank: the one "missing value" marker (stands in for null, a
+    # blank cell, and NaN all at once). No arithmetic, no cross-type
+    # comparison — isblank() and coalesce() are the sanctioned ways
+    # to interact with it, which is the "type safe" part.
+    _check("blank()", Blank(), "blank")
+    _check("blank() = blank()", True, "boolean")
+    _check("isblank(blank())", True, "boolean")
+    _check("isblank(5)", False, "boolean")
+    _check("coalesce(blank(), $5)", Quantity(Decimal(5), Unit.CURRENCY), "currency")
+    _check("coalesce($3, $5)", Quantity(Decimal(3), Unit.CURRENCY), "currency")
+    _check(
+        "coalesce(price, $0)",
+        Quantity(Decimal(0), Unit.CURRENCY),
+        "currency",
+        {"price": Blank()},
+    )
+    _expect_error("blank() + 5", "not defined")
+    _expect_error("blank() = 5", "not defined")
+    _expect_error("coalesce(5, $5)", "same type as the default")
+
+    # Infinity: Decimal has genuine IEEE-854 infinity built in, so
+    # this is just a Decimal value — every existing decimal rule
+    # (comparisons, unary minus, min/max) already works on it.
+    # Indeterminate forms (inf - inf, inf / inf, 0 * inf) are runtime
+    # errors, not a silently propagated special value — the checker
+    # already promised a definite category, and honoring that promise
+    # is the point.
+    _check("infinity()", Decimal("Infinity"), "decimal")
+    _check("\u221e", Decimal("Infinity"), "decimal")
+    _check("-\u221e", Decimal("-Infinity"), "decimal")
+    _check("infinity() + 5", Decimal("Infinity"), "decimal")
+    _check("5 / infinity()", Decimal(0), "decimal")
+    _check("infinity() > 999999999999999", True, "boolean")
+    assert format_result(evaluate_expression("infinity()").value) == "\u221e"
+    _expect_error("infinity() - infinity()", "indeterminate")
+    _expect_error("infinity() / infinity()", "indeterminate")
+    _expect_error("round(infinity())", "infinite")
+    _expect_error("$5 * infinity()", "can't be infinite")
+
 
     # Runtime errors still surface cleanly, with a position attached.
     _expect_error("1 / 0", "divide by zero")
@@ -183,6 +253,7 @@ def _():
         "qty": 3,
         "shipment": Quantity(Decimal("2.4"), Unit.TONNAGE),
         "start": date(2026, 1, 15),
+        "z": Complex(Decimal(2), Decimal(3)),
     }
 
     _rows = "\n".join(
@@ -260,6 +331,11 @@ def _():
     `$5.2 * 1.5%` ·
     `price - price * 15%` ·
     `ceil(3h + 20min, 1h)`
+    `z * conj(z)` ·
+    `abs(3 + 4i)` ·
+    `pi() * radius ** 2` ·
+    `coalesce(blank(), $0)` ·
+    `infinity() > 10 ** 100`
 
     **These fail the type check (on purpose):**
     `$5 + 3` ·
@@ -267,6 +343,8 @@ def _():
     `if(1, 2, 3)` ·
     `2026-01-01 + 2h` ·
     `$5 + 5%`
+    `blank() + 5` ·
+    `z < 3+4i`
     """)
     return
 

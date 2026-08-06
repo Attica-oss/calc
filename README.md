@@ -10,13 +10,18 @@ $1,080.00  (currency)
 calc> price - price * 15%
 calc> 2026-01-31 + 1mo
 2026-02-28  (date)
+calc> abs(3 + 4i)
+5  (decimal)
+calc> coalesce(blank(), $0)
+$0.00  (currency)
 ```
 
 ## Features
 
 - **Typed values**: whole numbers, decimals, booleans, dates, datetimes,
-  times, calendar-aware durations, currency, tonnage, and percentages are
-  all distinct types. `$5 + 3` is a type error, not a guess.
+  times, calendar-aware durations, currency, tonnage, percentages,
+  complex numbers, and a single type-safe blank marker are all distinct
+  types. `$5 + 3` is a type error, not a guess.
 - **Exact arithmetic**: money and quantities use `Decimal`, never binary
   floats — `$0.10 + $0.20` is really `$0.30`.
 - **Static type checking**: expressions are checked before they're
@@ -24,9 +29,17 @@ calc> 2026-01-31 + 1mo
   offending token instead of halfway through a computation.
 - **Calendar-aware dates**: adding `1mo` to `2026-01-31` correctly lands on
   `2026-02-28`, not an invalid date.
+- **A type-safe blank marker**: one sentinel for "missing" — `isblank()`
+  and `coalesce()` are the only sanctioned ways to touch it; arithmetic
+  or a comparison against anything else is a type error, not a silent 0.
+- **Infinity**: `infinity()` or the literal `∞`, backed by Decimal's own
+  IEEE-854 infinity — ordinary arithmetic and comparisons work on it for
+  free, and indeterminate forms (`∞ − ∞`, `∞ / ∞`) fail loudly instead of
+  guessing.
 - **Variables and functions**: bind values with `let`, reference them
-  later, and call `if`, `sum`, `avg`, `min`, `max`, `round`, `abs`,
-  `days_between`, `today`, `now`, and `time`.
+  later, and call `if`, `coalesce`, `sum`, `avg`, `min`, `max`, `round`,
+  `ceil`, `abs`, `re`, `im`, `conj`, `isblank`, `days_between`, `today`,
+  `now`, `time`, `pi`, `e`, and `infinity`.
 - **A CLI and a REPL**: one-shot evaluation for scripting, or an
   interactive shell with variable history, colorized output, and an
   `ans` register.
@@ -115,13 +128,58 @@ of the last plain expression is always available as `ans`.
 | `time`      | `09:30`, `09:30:00`      | ISO 8601                                |
 | `duration`  | `30min`, `2h`, `3d`, `4mo`, `1y` | calendar-aware, see below       |
 | `currency`  | `$12.50`                 | 2 decimal places                        |
-| `tonnage`   | `2.4t`                   | 3 decimal places                        |
+| `tonnage`   | `2.4t`                   | 3 decimal places, always shown          |
 | `percent`   | `1.5%`                   | stored as a ratio, applied via `*`      |
+| `complex`   | `4i`, `3+4i`             | bare `i` with no glued digits is still an ordinary variable name |
+| `blank`     | `blank()`                | the one "missing value" marker — see below |
+
+`3.14159...` and `2.71828...` are available as `pi()` and `e()` (function
+calls, not bare identifiers, so they can never shadow a variable you
+happen to name `pi`), each good to 50 significant digits — comfortably
+past `Decimal`'s default 28-digit working precision, so a calculation's
+own precision is always the limit, not the constant's. `infinity()` or
+the literal `∞` gives you `Decimal`'s built-in IEEE-854 infinity, which
+means every existing rule for `decimal` — comparisons, unary minus,
+`min`/`max`, `abs` — already works on it with no special-casing:
+
+```
+infinity() > 10 ** 100    # TRUE
+5 / infinity()             # 0
+infinity() * -1              # -∞
+-∞ < 0                        # TRUE
+```
+
+Indeterminate forms fail loudly rather than guessing:
+
+```
+infinity() - infinity()   # error — this has no defined result
+0 * infinity()              # error — same
+$5 * infinity()               # error — currency can't be infinite
+```
 
 Duration units: `s`, `min`, `h`, `d`, `w`, `mo`, `y`. Durations track
 months, days, and seconds separately (calendar months aren't a fixed
 number of days), so they support `+`/`-` with dates and each other, but
 have no total ordering — `min`/`max`/`<` reject them on purpose.
+
+### Blank
+
+`blank()` is the single "missing value" marker — it plays the role SQL's
+`NULL`, a blank spreadsheet cell, and floating-point `NaN` would
+separately play elsewhere, unified into one sentinel. It's deliberately
+inert: no arithmetic, and no comparison against anything but another
+blank.
+
+```
+blank() + 5                  # error — arithmetic on blank isn't defined
+blank() = 5                    # error — cross-type comparison isn't defined
+isblank(x)                       # TRUE/FALSE, works on any type
+coalesce(x, default)               # x if x isn't blank, else default
+```
+
+That's the "type safe" part: a blank value can never silently act like
+`0` or `""` in a calculation the way it might in a spreadsheet — you
+have to explicitly unwrap it with `coalesce()` first.
 
 ### Operators
 
@@ -155,11 +213,18 @@ $5.20 * 1.5%             # $0.08    — percentages apply, Excel-style
 | `today()`                     | current date                                       |
 | `now()`                       | current datetime (seconds precision)               |
 | `time(h, m[, s])`              | build a time value                                 |
-| `abs(x)`                       | absolute value (number, duration, or quantity)     |
+| `pi()` / `e()`                 | mathematical constants, 50 significant digits      |
+| `infinity()`                    | `Decimal`'s IEEE-854 infinity; `∞` also works      |
+| `abs(x)`                       | absolute value (number, duration, quantity, or the modulus of a complex number) |
 | `round(x[, digits])`           | round to `digits` decimal places (default 0)       |
 | `ceil(x, multiple)`            | round `x` up to the nearest multiple of `multiple` |
 | `min(...)` / `max(...)`        | smallest/largest of same-typed, orderable values   |
-| `sum(...)` / `avg(...)`        | total/average of numbers, quantities, or durations |
+| `sum(...)` / `avg(...)`        | total/average of numbers, quantities, durations, or complex numbers |
+| `re(z)` / `im(z)`              | real / imaginary part of a complex number          |
+| `conj(z)`                       | complex conjugate                                    |
+| `blank()`                       | the missing-value marker                             |
+| `isblank(x)`                     | `TRUE` iff `x` is blank — the one function that accepts any type |
+| `coalesce(x, default)`            | `x`, or `default` if `x` is blank                    |
 | `if(cond, then, else)`         | lazy — the untaken branch is never evaluated       |
 | `days_between(date, date)`     | whole days between two dates, as an `int`          |
 
@@ -209,3 +274,8 @@ src/notebook.py         a marimo notebook importing engine_cli.py, with
 `src/engine_cli.py` is the single source of truth for the engine; both
 `main.py` and `src/notebook.py` import from it rather than redefining
 any of it, so a fix or new feature only has to be made once.
+
+### Adding a type, function, or constant
+
+See [`docs/EXTENDING.md`](docs/EXTENDING.md) for a walkthrough of each,
+with a worked example and a checklist to follow.
