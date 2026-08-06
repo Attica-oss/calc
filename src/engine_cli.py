@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import (
+    ROUND_CEILING,
     ROUND_HALF_UP,
     Decimal,
     DivisionByZero,
@@ -1303,6 +1304,103 @@ def _round_impl(values):
     return round(values[0], digits)
 
 
+# ---- ceil ----------------------------------------------------------
+#
+# Excel-style CEILING: round a value up to the nearest multiple of a
+# second argument (the "significance"), rather than to a fixed number
+# of decimal places like round(). This is what makes it work for
+# durations — "round this duration up to the nearest hour" is
+# ceil(duration, 1h) — and for quantities, e.g. ceil($12.30, $0.50).
+
+
+def _require_positive_significance(value):
+    if value <= 0:
+        raise ExpressionError(
+            "ceil()'s second argument (the multiple to round up to) "
+            "must be positive."
+        )
+
+
+def _ceil_multiple(value: Decimal, significance: Decimal) -> Decimal:
+    quotient = (value / significance).to_integral_value(rounding=ROUND_CEILING)
+    return quotient * significance
+
+
+def _duration_total_seconds(duration: Duration) -> int:
+    return duration.days * 86_400 + duration.seconds
+
+
+def _duration_from_total_seconds(total_seconds: int) -> Duration:
+    days, seconds = divmod(abs(total_seconds), 86_400)
+
+    if total_seconds < 0:
+        days = -days
+        seconds = -seconds
+
+    return Duration(days=days, seconds=seconds)
+
+
+def _ceil_duration(value: Duration, significance: Duration) -> Duration:
+    if value.months or significance.months:
+        raise ExpressionError(
+            "ceil() can't use calendar months in a duration: a month "
+            "has no fixed length. Use weeks, days, hours, minutes, "
+            "or seconds instead."
+        )
+
+    significance_seconds = _duration_total_seconds(significance)
+    _require_positive_significance(significance_seconds)
+
+    value_seconds = _duration_total_seconds(value)
+    quotient, remainder = divmod(value_seconds, significance_seconds)
+
+    if remainder:
+        quotient += 1
+
+    return _duration_from_total_seconds(quotient * significance_seconds)
+
+
+def _ceil_result(categories, node):
+    value_category, significance_category = categories
+
+    if value_category in NUMERIC_CATEGORIES and significance_category in NUMERIC_CATEGORIES:
+        return numeric_result(value_category, significance_category)
+
+    if value_category == "duration" and significance_category == "duration":
+        return "duration"
+
+    if (
+        value_category in {"currency", "tonnage", "percent"}
+        and significance_category == value_category
+    ):
+        return value_category
+
+    _fail(
+        node,
+        "ceil()'s second argument must be the same kind of value as "
+        "the first — a matching duration or quantity, or a number.",
+    )
+
+
+def _ceil_impl(values):
+    value, significance = values
+
+    if isinstance(value, Duration):
+        return _ceil_duration(value, significance)
+
+    if isinstance(value, Quantity):
+        _require_positive_significance(significance.value)
+        return Quantity(_ceil_multiple(value.value, significance.value), value.unit)
+
+    _require_positive_significance(significance)
+    result = _ceil_multiple(to_decimal(value), to_decimal(significance))
+
+    if isinstance(value, int) and isinstance(significance, int):
+        return int(result)
+
+    return result
+
+
 # ---- min / max ---------------------------------------------------
 
 _ORDERABLE = {"date", "datetime", "time", "currency", "tonnage", "percent"}
@@ -1472,6 +1570,7 @@ FUNCTIONS = {
     "time": FunctionSpec("time", 2, 3, False, _time_result, _time_impl),
     "abs": FunctionSpec("abs", 1, 1, False, _abs_result, _abs_impl),
     "round": FunctionSpec("round", 1, 2, False, _round_result, _round_impl),
+    "ceil": FunctionSpec("ceil", 2, 2, False, _ceil_result, _ceil_impl),
     "min": FunctionSpec(
         "min", 1, None, False, _min_max_result("min"), _min_max_impl(min)
     ),
