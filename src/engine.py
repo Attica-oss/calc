@@ -5,9 +5,8 @@ CLI both import from here, so this file is the single source of truth.
 """
 
 import calendar
-import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import (
@@ -20,6 +19,7 @@ from decimal import (
     Overflow,
 )
 from enum import Enum
+from typing import Any
 
 # Type Aliases
 type Number = int | Decimal
@@ -457,6 +457,7 @@ def tokenize(expression: str) -> list[Token]:
             )
 
         kind = match.lastgroup
+        assert kind is not None
         value = match.group()
 
         if kind != "SPACE":
@@ -1027,7 +1028,22 @@ def numeric_multiply(a, b):
 def numeric_divide(a, b):
     _nonzero(b)
     # int / int must not fall into binary floats.
-    return to_decimal(a) / to_decimal(b)
+    # return to_decimal(a) / to_decimal(b)
+
+    left = to_decimal(a)
+    right = to_decimal(b)
+
+    _nonzero(right)
+
+    if left.is_infinite() and right.is_infinite():
+        raise ExpressionError("infinity divided by infinity is indeterminate")
+
+    try:
+        return left / right
+    except InvalidOperation as error:
+        raise ExpressionError(
+            "The division produced an indeterminate result."
+        ) from error
 
 
 def numeric_floordiv(a, b):
@@ -1663,16 +1679,37 @@ def _round_result(categories, node):
     return categories[0]
 
 
+def reject_nonfinite(
+    value: Decimal,
+    operation: str,
+) -> None:
+    if value.is_nan():
+        raise ExpressionError(f"{operation} cannot operate on NaN.")
+
+    if value.is_infinite():
+        raise ExpressionError(f"{operation} cannot operate on an infinite value.")
+
+
 def _round_impl(values):
-    if len(values) == 1:
-        return round(values[0])
+    value = values[0]
 
-    digits = values[1]
+    # Decimal infinities and NaN are not meaningful here.
+    if isinstance(value, Decimal) and not value.is_finite():
+        raise ExpressionError("Cannot round an infinite value.")
 
-    if abs(digits) > 100:
-        raise ExpressionError("The number of decimal places is too large.")
+    try:
+        if len(values) == 1:
+            return round(value)
 
-    return round(values[0], digits)
+        digits = values[1]
+
+        if abs(digits) > 100:
+            raise ExpressionError("The number of decimal places is too large.")
+
+        return round(value, digits)
+
+    except (InvalidOperation, OverflowError) as error:
+        raise ExpressionError("The value cannot be rounded.") from error
 
 
 # ---- min / max ---------------------------------------------------
@@ -1986,7 +2023,12 @@ def _days_between_result(categories, node):
 
 FUNCTIONS = {
     "today": FunctionSpec(
-        "today", 0, 0, False, _fixed("date"), lambda values: date.today()
+        "today",
+        0,
+        0,
+        False,
+        _fixed("date"),
+        lambda values: datetime.now().date(),
     ),
     "now": FunctionSpec(
         "now",
@@ -2201,8 +2243,8 @@ class EvaluationResult:
 
 def evaluate_expression(
     expression: str,
-    variables: dict | None = None,
-    functions: dict | None = None,
+    variables: Mapping[str, Any] | None = None,
+    functions: Mapping[str, Any] | None = None,
 ) -> EvaluationResult:
     """tokenize -> parse -> type check -> evaluate."""
 
@@ -2212,8 +2254,8 @@ def evaluate_expression(
     if len(expression) > 500:
         raise ExpressionError("The expression is too long.")
 
-    variables = {} if variables is None else variables
-    functions = FUNCTIONS if functions is None else functions
+    variables = {} if variables is None else dict(variables)
+    functions = FUNCTIONS if functions is None else dict(functions)
 
     try:
         node = parse(expression)
@@ -2355,20 +2397,3 @@ def format_result(value) -> str:
         return format_decimal(value)
 
     return f"{value:,}"
-
-
-__all__ = [
-    "Blank",
-    "Complex",
-    "Duration",
-    "EvaluationResult",
-    "ExpressionError",
-    "FUNCTIONS",
-    "Quantity",
-    "Unit",
-    "category_of",
-    "evaluate_expression",
-    "format_result",
-    "parse",
-    "variables_in",
-]

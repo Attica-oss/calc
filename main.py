@@ -44,7 +44,7 @@ import typer
 from rich.console import Console
 from rich.theme import Theme
 
-from src.engine_cli import (
+from src.engine import (
     ExpressionError,
     category_of,
     evaluate_expression,
@@ -55,8 +55,9 @@ THEME = Theme(
     {
         "calc.prompt": "bold cyan",
         "calc.value": "bold green",
-        "calc.currency": "bold cyan",
+        "calc.currency": "#2596be",
         "calc.tonnage": "bold #ff8700",
+        "calc.boolean": "bold #86c204",
         "calc.category": "dim",
         "calc.variable": "yellow",
         "calc.error": "bold red",
@@ -78,6 +79,7 @@ LET_RE = re.compile(r"^\s*let\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$")
 CATEGORY_STYLES = {
     "currency": "calc.currency",
     "tonnage": "calc.tonnage",
+    "boolean": "calc.boolean",
 }
 
 REPL_HELP = """\

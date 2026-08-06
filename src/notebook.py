@@ -4,12 +4,12 @@ __generated_with = "0.23.16"
 app = marimo.App(auto_download=["html"])
 
 with app.setup:
-    from datetime import date, time,datetime
+    from datetime import date, datetime, time
     from decimal import Decimal
 
     import marimo as mo
 
-    from engine_cli import (
+    from .engine import (
         Blank,
         Complex,
         Duration,
@@ -34,7 +34,6 @@ def _():
     engine's inline test suite on load, then gives you a live UI to
     try expressions against a handful of sample variables.
     """)
-    return
 
 
 @app.cell(hide_code=True)
@@ -44,7 +43,6 @@ def _():
     a tiny executable spec of the engine's behaviour.<br>
     They run on notebook load; the cell renders a checkmark when green.
     """)
-    return
 
 
 @app.cell
@@ -120,9 +118,7 @@ def _():
     )
 
     # if() is lazy: the untaken branch is never evaluated.
-    _check(
-        "if(2 > 1, $5, $6)", Quantity(Decimal(5), Unit.CURRENCY), "currency"
-    )
+    _check("if(2 > 1, $5, $6)", Quantity(Decimal(5), Unit.CURRENCY), "currency")
     _check("if(1 = 1, 2, 1 // 0)", 2, "int")
 
     # ceil(): round up to the nearest multiple of the second argument
@@ -132,9 +128,7 @@ def _():
     _check("ceil(-7, 5)", -5, "int")
     _check("ceil(3h + 20min, 1h)", Duration(seconds=14_400), "duration")
     _check("ceil(50min, 15min)", Duration(seconds=3_600), "duration")
-    _check(
-        "ceil($12.30, $0.50)", Quantity(Decimal("12.50"), Unit.CURRENCY), "currency"
-    )
+    _check("ceil($12.30, $0.50)", Quantity(Decimal("12.50"), Unit.CURRENCY), "currency")
 
     # Static type errors, caught before evaluation.
     _expect_error("$5 + 3", "not defined for a currency amount")
@@ -166,9 +160,7 @@ def _():
     _check("4i", Complex(Decimal(0), Decimal(4)), "complex")
     _check("3 + 4i", Complex(Decimal(3), Decimal(4)), "complex")
     _check("2i * 2i", Complex(Decimal(-4), Decimal(0)), "complex")  # i^2 = -1
-    _check(
-        "(3+4i) / (1+2i)", Complex(Decimal("2.2"), Decimal("-0.4")), "complex"
-    )
+    _check("(3+4i) / (1+2i)", Complex(Decimal("2.2"), Decimal("-0.4")), "complex")
     _check("re(3+4i)", Decimal(3), "decimal")
     _check("im(3+4i)", Decimal(4), "decimal")
     _check("conj(3+4i)", Complex(Decimal(3), Decimal(-4)), "complex")
@@ -228,7 +220,7 @@ def _():
     _expect_error("round(infinity())", "infinite")
     _expect_error("$5 * infinity()", "can't be infinite")
 
-# Casts (value::target): field extraction and type conversion.
+    # Casts (value::target): field extraction and type conversion.
     # Both singular and plural read naturally on a date/time, so both
     # are registered (::day and ::days both work).
     _check("2026-05-01::DAY", 1, "int")
@@ -260,12 +252,10 @@ def _():
     _expect_error("2026-01-05::NONSENSE", "Cannot cast a date to nonsense")
     _expect_error("$5::TONNAGE", "Cannot cast a currency amount to tonnage")
 
-
     # Runtime errors still surface cleanly, with a position attached.
     _expect_error("1 / 0", "divide by zero")
 
     mo.md("✅ All inline tests passed.")
-    return
 
 
 @app.cell(hide_code=True)
@@ -273,7 +263,6 @@ def _():
     mo.md(r"""
     # Sample variable bindings
     """)
-    return
 
 
 @app.cell
@@ -293,12 +282,7 @@ def _():
         for name, value in variables.items()
     )
 
-    mo.md(
-        "**Variables**\n\n"
-        "| Name | Value | Type |\n"
-        "| --- | --- | --- |\n"
-        f"{_rows}"
-    )
+    mo.md(f"**Variables**\n\n| Name | Value | Type |\n| --- | --- | --- |\n{_rows}")
     return (variables,)
 
 
@@ -336,16 +320,13 @@ def _(expression_input, variables):
             _output = mo.vstack(
                 [
                     mo.callout(_error.message, kind="warn"),
-                    mo.md(
-                        f"```text\n{expression_input.value}\n{_pointer}\n```"
-                    ),
+                    mo.md(f"```text\n{expression_input.value}\n{_pointer}\n```"),
                 ]
             )
         else:
             _output = mo.callout(_error.message, kind="warn")
 
     _output
-    return
 
 
 @app.cell
@@ -378,7 +359,6 @@ def _():
     `blank() + 5` ·
     `z < 3+4i`
     """)
-    return
 
 
 if __name__ == "__main__":
