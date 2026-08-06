@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import (
     ROUND_CEILING,
+    ROUND_DOWN,
     ROUND_HALF_UP,
     Decimal,
     DivisionByZero,
@@ -352,7 +353,7 @@ TOKEN_RE = re.compile(
     |
     (?P<DATETIME>
         \d{4}-\d{2}-\d{2}
-        [Tt]
+        [ Tt]
         \d{2}:\d{2}
         (?::\d{2})?
     )
@@ -402,6 +403,8 @@ TOKEN_RE = re.compile(
     )
     |
     (?P<POWER>\*\*)
+    |
+    (?P<DOUBLECOLON>::)
     |
     (?P<FLOORDIV>//)
     |
@@ -506,6 +509,21 @@ class BinOp:
 class Call:
     name: str
     args: tuple
+    position: int
+
+
+@dataclass(frozen=True)
+class Cast:
+    """value::target — a type conversion or field extraction.
+
+    target is a fixed, lowercased vocabulary (day, month, year, date,
+    decimal, ...), not a general expression, so there's nothing to
+    evaluate on the right side — it's closer to a keyword than an
+    operand. See CAST_RULES for what's registered.
+    """
+
+    value: object
+    target: str
     position: int
 
 
@@ -696,7 +714,7 @@ class Parser:
             self.depth -= 1
 
     def parse_power(self):
-        left = self.parse_primary()
+        left = self.parse_cast()
 
         # Recursion makes exponentiation right-associative:
         # 2 ** 3 ** 2 means 2 ** (3 ** 2).
@@ -713,6 +731,28 @@ class Parser:
             )
 
         return left
+
+    def parse_cast(self):
+        value = self.parse_primary()
+
+        # A while-loop, not a single check, so x::datetime::date chains:
+        # cast to datetime, then cast that result to date. Each cast
+        # binds only to the value immediately to its left — (a + b)::date
+        # needs the parens for the same reason 4i binds only to the 4
+        # immediately before it, not to a whole preceding expression.
+        while True:
+            token = self.accept("DOUBLECOLON")
+
+            if token is None:
+                return value
+
+            target_token = self.expect("IDENTIFIER", "a cast target after '::'")
+
+            value = Cast(
+                value=value,
+                target=target_token.value.lower(),
+                position=token.position,
+            )
 
     def parse_primary(self):
         token = self.current
@@ -902,6 +942,8 @@ def variables_in(node) -> tuple[str, ...]:
         elif isinstance(current, Call):
             for argument in current.args:
                 walk(argument)
+        elif isinstance(current, Cast):
+            walk(current.value)
 
     walk(node)
     return tuple(sorted(names))
@@ -1008,9 +1050,9 @@ def numeric_power(base, exponent):
         raise ExpressionError("The exponentiation could not be calculated.") from error
 
 
-register_binary("+", "number", "number", numeric_result, lambda a, b: a + b)
-register_binary("-", "number", "number", numeric_result, lambda a, b: a - b)
-register_binary("*", "number", "number", numeric_result, lambda a, b: a * b)
+register_binary("+", "number", "number", numeric_result, numeric_add)
+register_binary("-", "number", "number", numeric_result, numeric_subtract)
+register_binary("*", "number", "number", numeric_result, numeric_multiply)
 register_binary("/", "number", "number", "decimal", numeric_divide)
 register_binary("//", "number", "number", numeric_result, numeric_floordiv)
 register_binary("%", "number", "number", numeric_result, numeric_modulo)
@@ -1377,6 +1419,111 @@ for _unit_category in ("currency", "tonnage", "percent"):
         lambda q: Quantity(-q.value, q.unit),
     )
     register_unary("+", _unit_category, _unit_category, lambda q: q)
+
+# ------------------------------------------------------------------
+# Casts: value::target
+#
+# A second dispatch table, deliberately separate from BINARY_RULES —
+# the key shape is different (source category, target keyword) rather
+# than (op, left category, right category), and unlike an operator, a
+# target keyword isn't itself a typed value with its own category, so
+# it can't be run through check_types the way an operand can. Same
+# spirit as the operator table, though: an unregistered combination is
+# automatically a clean type error, no special-casing required.
+# ------------------------------------------------------------------
+
+CAST_RULES: dict = {}
+
+
+def register_cast(source_category, target, result_category, impl):
+    CAST_RULES[(source_category, target)] = (result_category, impl)
+
+
+# ---- Field extraction (-> int) ------------------------------------
+#
+# Both singular and plural read naturally here (::day and ::days both
+# make sense on a date), so both are registered rather than forcing
+# one spelling — this is the one place in the cast vocabulary where
+# that ambiguity has no real cost.
+
+
+def register_field(source_category, singular, plural, impl):
+    register_cast(source_category, singular, "int", impl)
+    register_cast(source_category, plural, "int", impl)
+
+
+register_field("date", "year", "years", lambda v: v.year)
+register_field("date", "month", "months", lambda v: v.month)
+register_field("date", "day", "days", lambda v: v.day)
+
+register_field("datetime", "year", "years", lambda v: v.year)
+register_field("datetime", "month", "months", lambda v: v.month)
+register_field("datetime", "day", "days", lambda v: v.day)
+register_field("datetime", "hour", "hours", lambda v: v.hour)
+register_field("datetime", "minute", "minutes", lambda v: v.minute)
+register_field("datetime", "second", "seconds", lambda v: v.second)
+
+register_field("time", "hour", "hours", lambda v: v.hour)
+register_field("time", "minute", "minutes", lambda v: v.minute)
+register_field("time", "second", "seconds", lambda v: v.second)
+
+# ---- Temporal conversions ------------------------------------------
+
+register_cast("datetime", "date", "date", lambda v: v.date())
+register_cast("datetime", "time", "time", lambda v: v.time())
+register_cast("date", "datetime", "datetime", lambda v: datetime.combine(v, time()))
+
+# Identity casts: harmless, and useful in a formula that doesn't want
+# to care whether its input already happens to be the target type.
+register_cast("date", "date", "date", lambda v: v)
+register_cast("time", "time", "time", lambda v: v)
+register_cast("datetime", "datetime", "datetime", lambda v: v)
+
+# ---- Numeric <-> quantity conversions -------------------------------
+#
+# ::decimal always exposes the *raw stored* Decimal — for percent
+# that's the ratio (5%::decimal is 0.05, not 5), consistent with how
+# percent is represented everywhere else in the engine (e.g. $100 *
+# 5% needs that same ratio). Going the other way, a plain number cast
+# to percent is read the way the % literal reads it (5::percent means
+# "5 percent", i.e. a ratio of 0.05) rather than as the raw ratio —
+# so the two casts are actual inverses of each other, round-tripping
+# 5% -> 0.05 -> back to 5%, not to a startling 500%.
+
+for _unit_category in ("currency", "tonnage"):
+    register_cast(_unit_category, "decimal", "decimal", lambda v: v.value)
+    register_cast(
+        "int",
+        _unit_category,
+        _unit_category,
+        lambda v, _u=_unit_category: Quantity(to_decimal(v), Unit(_u)),
+    )
+    register_cast(
+        "decimal",
+        _unit_category,
+        _unit_category,
+        lambda v, _u=_unit_category: Quantity(v, Unit(_u)),
+    )
+
+register_cast("percent", "decimal", "decimal", lambda v: v.value)
+register_cast(
+    "int", "percent", "percent", lambda v: Quantity(to_decimal(v) / 100, Unit.PERCENT)
+)
+register_cast(
+    "decimal", "percent", "percent", lambda v: Quantity(v / 100, Unit.PERCENT)
+)
+
+# decimal <-> int: widening is exact and free; narrowing truncates
+# toward zero (a genuine cast, deliberately different from round(),
+# which rounds half-up instead of chopping the fractional part).
+register_cast("int", "decimal", "decimal", lambda v: to_decimal(v))
+register_cast(
+    "decimal", "int", "int", lambda v: int(v.to_integral_value(rounding=ROUND_DOWN))
+)
+register_cast("int", "int", "int", lambda v: v)
+register_cast("decimal", "decimal", "decimal", lambda v: v)
+
+
 # ------------------------------------------------------------------
 # Function registry
 #
@@ -1878,12 +2025,8 @@ FUNCTIONS = {
     "blank": FunctionSpec(
         "blank", 0, 0, False, _fixed("blank"), lambda values: Blank()
     ),
-    "isblank": FunctionSpec(
-        "isblank", 1, 1, False, _isblank_result, _isblank_impl
-    ),
-    "coalesce": FunctionSpec(
-        "coalesce", 2, 2, False, _coalesce_result, _coalesce_impl
-    ),
+    "isblank": FunctionSpec("isblank", 1, 1, False, _isblank_result, _isblank_impl),
+    "coalesce": FunctionSpec("coalesce", 2, 2, False, _coalesce_result, _coalesce_impl),
     "if": FunctionSpec("if", 3, 3, True, _if_result, _if_impl),
     "days_between": FunctionSpec(
         "days_between",
@@ -1987,6 +2130,18 @@ def check_types(node, variable_types: dict, functions: dict) -> str:
 
         return spec.result_type(categories, node)
 
+    if isinstance(node, Cast):
+        source = check_types(node.value, variable_types, functions)
+        rule = CAST_RULES.get((source, node.target))
+
+        if rule is None:
+            raise ExpressionError(
+                f"Cannot cast {label(source)} to {node.target}.",
+                node.position,
+            )
+
+        return rule[0]
+
     raise ExpressionError("Unsupported expression node.")
 
 
@@ -2021,6 +2176,11 @@ def evaluate_node(node, environment: Environment):
             values = [evaluate_node(argument, environment) for argument in node.args]
 
             return spec.impl(values)
+
+        if isinstance(node, Cast):
+            value = evaluate_node(node.value, environment)
+            _, impl = CAST_RULES[(category_of(value), node.target)]
+            return impl(value)
 
         raise ExpressionError("Unsupported expression node.")
     except ExpressionError as error:
@@ -2156,10 +2316,12 @@ def format_complex(value: Complex) -> str:
 def format_result(value) -> str:
     # bool is a subclass of int: check it first.
     if isinstance(value, bool):
-        return "TRUE" if value else "FALSE" # Check if we can change to lowercase true and false
+        return (
+            "TRUE" if value else "FALSE"
+        )  # Check if we can change to lowercase true and false
 
     if isinstance(value, Blank):
-        return "blank" # Check if we can change to 'null'
+        return "blank"  # Check if we can change to 'null'
 
     if isinstance(value, Complex):
         return format_complex(value)
@@ -2172,7 +2334,7 @@ def format_result(value) -> str:
         if value.unit is Unit.PERCENT:
             return f"{format_decimal(value.value * 100)}%"
 
-        return f"{value.value:,.3f} t" # Tonnage
+        return f"{value.value:,.3f} t"  # Tonnage
 
     if is_datetime(value):
         return value.isoformat(sep=" ", timespec="seconds")

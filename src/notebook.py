@@ -4,7 +4,7 @@ __generated_with = "0.23.16"
 app = marimo.App(auto_download=["html"])
 
 with app.setup:
-    from datetime import date, time
+    from datetime import date, time,datetime
     from decimal import Decimal
 
     import marimo as mo
@@ -227,6 +227,38 @@ def _():
     _expect_error("infinity() / infinity()", "indeterminate")
     _expect_error("round(infinity())", "infinite")
     _expect_error("$5 * infinity()", "can't be infinite")
+
+# Casts (value::target): field extraction and type conversion.
+    # Both singular and plural read naturally on a date/time, so both
+    # are registered (::day and ::days both work).
+    _check("2026-05-01::DAY", 1, "int")
+    _check("2026-05-01::MONTH", 5, "int")
+    _check("2026-05-01::YEAR", 2026, "int")
+    _check("01:00::HOUR", 1, "int")
+    _check("01:05::MINUTES", 5, "int")
+    _check("01:05::MINUTE", 5, "int")
+    _check("$5.15::DECIMAL", Decimal("5.15"), "decimal")
+    # A space is accepted as a datetime separator (not just T), so
+    # this round-trips with how format_result already displays one.
+    _check("2026-01-05 01:00::DATE", date(2026, 1, 5), "date")
+    _check("2026-01-05T14:30:45::TIME", time(14, 30, 45), "time")
+    _check("2026-01-05::DATETIME", datetime(2026, 1, 5), "datetime")
+    # :: is case-insensitive, same as function names.
+    _check("2026-05-01::day", 1, "int")
+    # Casts chain: cast to datetime, then extract month from that.
+    _check("2026-01-05T14:30:00::DATE::MONTH", 1, "int")
+    # :: binds tighter than ** and unary minus.
+    _check("2 ** 3::decimal", Decimal(8), "decimal")
+    _check("-5::decimal", Decimal(-5), "decimal")
+    # Numeric <-> quantity, both directions.
+    _check("5::CURRENCY", Quantity(Decimal(5), Unit.CURRENCY), "currency")
+    _check("5::PERCENT", Quantity(Decimal("0.05"), Unit.PERCENT), "percent")
+    _check("5%::DECIMAL", Decimal("0.05"), "decimal")  # raw ratio, not 5
+    _check("7.9::INT", 7, "int")  # truncates toward zero
+    _check("-7.9::INT", -7, "int")
+    _expect_error("5::DAY", "Cannot cast a whole number to day")
+    _expect_error("2026-01-05::NONSENSE", "Cannot cast a date to nonsense")
+    _expect_error("$5::TONNAGE", "Cannot cast a currency amount to tonnage")
 
 
     # Runtime errors still surface cleanly, with a position attached.
