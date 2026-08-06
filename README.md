@@ -40,6 +40,9 @@ $0.00  (currency)
   later, and call `if`, `coalesce`, `sum`, `avg`, `min`, `max`, `round`,
   `ceil`, `abs`, `re`, `im`, `conj`, `isblank`, `days_between`, `today`,
   `now`, `time`, `pi`, `e`, and `infinity`.
+- **Casts**: `value::TARGET` extracts a date/time field or converts
+  between types — `2026-05-01::MONTH` is `5`, `now()::DATE` drops the
+  time of day, `$5.15::DECIMAL` unwraps the currency to a plain number.
 - **A CLI and a REPL**: one-shot evaluation for scripting, or an
   interactive shell with variable history, colorized output, and an
   `ans` register.
@@ -124,7 +127,7 @@ of the last plain expression is always available as `ans`.
 | `decimal`   | `3.14`, `2e3`            | exact, never a binary float             |
 | `boolean`   | result of a comparison   | printed as `TRUE` / `FALSE`             |
 | `date`      | `2026-01-15`             | ISO 8601                                |
-| `datetime`  | `2026-01-15T09:30`       | ISO 8601, `T` or `t` separator          |
+| `datetime`  | `2026-01-15T09:30`, `2026-01-15 09:30` | ISO 8601, `T`/`t` or a space as the separator |
 | `time`      | `09:30`, `09:30:00`      | ISO 8601                                |
 | `duration`  | `30min`, `2h`, `3d`, `4mo`, `1y` | calendar-aware, see below       |
 | `currency`  | `$12.50`                 | 2 decimal places                        |
@@ -240,6 +243,53 @@ ceil(3h + 20min, 1h)       # 4h    — round a duration up to the nearest hour
 ceil(50min, 15min)          # 1h    — nearest 15-minute increment
 ceil($12.30, $0.50)          # $12.50
 ceil(3h, 1mo)                 # error — a month has no fixed length to divide by
+```
+
+### Casts (`value::target`)
+
+`::` extracts a field from a date/time value, or converts a value to a
+different type. It's case-insensitive, so `::DAY` and `::day` are the
+same, and it chains left to right: `x::datetime::date` casts to a
+datetime first, then that result to a date.
+
+```
+2026-05-01::DAY               # 1
+2026-05-01::MONTH               # 5
+2026-05-01::YEAR                  # 2026
+01:00::HOUR                         # 1
+01:05::MINUTE                         # 5     — MINUTES also works
+2026-01-05T14:30:00::DATE             # 2026-01-05
+2026-01-05 01:00::DATE                 # 2026-01-05  — a space works as the datetime separator too, not just T
+$5.15::DECIMAL                           # 5.15
+5::CURRENCY                                # $5.00
+5%::DECIMAL                                  # 0.05  — the raw stored ratio, not 5
+7.9::INT                                       # 7     — truncates toward zero, unlike round()
+```
+
+| Target                          | From                          | Result                                    |
+| --------------------------------- | ------------------------------- | -------------------------------------------- |
+| `YEAR` / `MONTH` / `DAY`             | `date`, `datetime`                | `int`                                          |
+| `HOUR` / `MINUTE` / `SECOND`           | `time`, `datetime`                  | `int` (plural spellings also accepted)           |
+| `DATE`                                   | `datetime`                            | `date` — drops the time of day                     |
+| `TIME`                                     | `datetime`                              | `time` — drops the date                              |
+| `DATETIME`                                   | `date`                                    | `datetime` at midnight                                 |
+| `DECIMAL`                                      | `currency`, `tonnage`, `percent`, `int`     | the raw stored number                                    |
+| `CURRENCY` / `TONNAGE`                            | `int`, `decimal`                              | wraps the number in that unit                              |
+| `PERCENT`                                           | `int`, `decimal`                                | read the way `%` reads a literal — `5::PERCENT` is `5%`, not `500%` |
+| `INT`                                                 | `decimal`                                         | truncates toward zero (not `round()`'s half-up)                       |
+
+`::` binds tighter than `**` and unary minus, so `-5::decimal` is
+`-(5::decimal)` and `2 ** 3::decimal` is `2 ** (3::decimal)` — it binds
+to the value immediately on its left, the same way `4i` or `2.4t`
+binds only to the number directly before it. Cast a whole expression
+by parenthesizing it first: `(a + b)::date`.
+
+An unsupported combination is a type error, same as any other
+mismatched types:
+
+```
+5::DAY                 # error — a whole number has no day field to extract
+$5::TONNAGE               # error — no defined conversion between units
 ```
 
 ### Variables

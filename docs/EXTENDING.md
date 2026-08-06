@@ -15,9 +15,11 @@ form of breaking that agreement — the checker promises `"decimal"`, the
 evaluator hands back something else. Keep that invariant in mind below;
 it's called out again where it actually bites.
 
-The three sections below are ordered easiest-first. If you're adding
+The four sections below are ordered easiest-first. If you're adding
 something that's both a new function *and* touches a new kind of value
-(most real features), read all three — start with **type**, since a
+(most real features), read the relevant ones together — start with
+**type**, since a function or cast usually exists to build or inspect
+one.
 function usually exists to build or inspect one.
 
 ---
@@ -161,6 +163,55 @@ If the constant is expensive or arbitrary-precision (like `PI`/`E`,
 hardcoded to 50 digits rather than computed), define it once at module
 level near the other constants and close over it in the lambda, as
 above — don't recompute it inside the lambda on every call.
+
+---
+
+## Adding a cast rule
+
+`value::TARGET` is its own dispatch table, `CAST_RULES`, deliberately
+separate from `BINARY_RULES` — the key shape is `(source_category,
+target_name)` rather than `(op, left_category, right_category)`, since
+a cast target (`day`, `date`, `decimal`, ...) is a fixed keyword, not a
+typed operand with its own category to check.
+
+```python
+def register_cast(source_category, target, result_category, impl):
+    CAST_RULES[(source_category, target)] = (result_category, impl)
+
+register_cast("datetime", "date", "date", lambda v: v.date())
+```
+
+Same rules as the operator table apply: leaving a combination
+unregistered makes it a clean type error for free (`5::DAY` fails
+because `("int", "day")` was never registered, not because of a
+special check anywhere), and every `impl` must actually return a value
+whose category matches what you registered — the same invariant from
+§6 above, since `check_types` and `evaluate_node` both consult
+`CAST_RULES` independently.
+
+The target name itself is just a string key, lowercased by the parser
+before lookup (`Cast.target`) — no tokenizer or grammar change is
+needed to add a new target for a type that already has a literal.
+You only touch the tokenizer if you're adding an entirely new *kind*
+of value with its own literal syntax (see "Adding a type" above); a
+new cast *target* for an existing type is purely a `CAST_RULES`
+registration.
+
+Two things worth deciding deliberately, the way `PERCENT`'s casts
+were:
+
+- **Is the conversion actually reversible, and does it read the way
+  a user would expect?** `5%::DECIMAL` gives `0.05` (percent's raw
+  internal ratio) and `0.05::PERCENT` gives back `5%` — the two casts
+  are genuine inverses. It would have been just as easy to make
+  `5::PERCENT` mean "the number 5, relabeled as a percent" (i.e.
+  `500%`), which is internally consistent but surprising and *not*
+  the inverse of the other direction. When a type has more than one
+  plausible reading, prefer the one that round-trips.
+- **Should this cast truncate, round, or reject?** `::INT` truncates
+  toward zero (a real cast, distinct from `round()`, which rounds
+  half-up) — pick one behavior deliberately and say so in a comment;
+  don't leave it to whatever Python's default happens to do.
 
 ---
 
@@ -378,6 +429,9 @@ actually run, shipped broken.
       declared, even on an error path — raise `ExpressionError` instead
 - [ ] Added to `abs`/`min`/`max`/`sum`/`avg`'s allowed-category sets,
       if it should work with them
+- [ ] New cast targets registered in `CAST_RULES`, if relevant — check
+      the conversion round-trips sensibly and decide truncate vs.
+      round vs. reject deliberately (see "Adding a cast rule")
 - [ ] `format_result` branch, placed before the generic fallbacks
 - [ ] Tests in `src/notebook.py`: literal, valid op, type error, format
 - [ ] `README.md`'s type and function tables updated
