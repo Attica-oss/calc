@@ -157,10 +157,25 @@ $5.20 * 1.5%             # $0.08    — percentages apply, Excel-style
 | `time(h, m[, s])`              | build a time value                                 |
 | `abs(x)`                       | absolute value (number, duration, or quantity)     |
 | `round(x[, digits])`           | round to `digits` decimal places (default 0)       |
+| `ceil(x, multiple)`            | round `x` up to the nearest multiple of `multiple` |
 | `min(...)` / `max(...)`        | smallest/largest of same-typed, orderable values   |
 | `sum(...)` / `avg(...)`        | total/average of numbers, quantities, or durations |
 | `if(cond, then, else)`         | lazy — the untaken branch is never evaluated       |
 | `days_between(date, date)`     | whole days between two dates, as an `int`          |
+
+`ceil()` is Excel's `CEILING` rather than a plain math ceiling: it needs
+a second argument to round up *to*, since "round up" is meaningless for
+a duration or a currency amount on its own. `multiple` must be the same
+kind of value as `x` (both numbers, or matching durations/quantities)
+and positive.
+
+```
+ceil(7, 5)                # 10
+ceil(3h + 20min, 1h)       # 4h    — round a duration up to the nearest hour
+ceil(50min, 15min)          # 1h    — nearest 15-minute increment
+ceil($12.30, $0.50)          # $12.50
+ceil(3h, 1mo)                 # error — a month has no fixed length to divide by
+```
 
 ### Variables
 

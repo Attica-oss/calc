@@ -123,6 +123,17 @@ def _():
     )
     _check("if(1 = 1, 2, 1 // 0)", 2, "int")
 
+    # ceil(): round up to the nearest multiple of the second argument
+    # (Excel-style CEILING), not to a fixed number of decimal places.
+    _check("ceil(7, 5)", 10, "int")
+    _check("ceil(10, 5)", 10, "int")
+    _check("ceil(-7, 5)", -5, "int")
+    _check("ceil(3h + 20min, 1h)", Duration(seconds=14_400), "duration")
+    _check("ceil(50min, 15min)", Duration(seconds=3_600), "duration")
+    _check(
+        "ceil($12.30, $0.50)", Quantity(Decimal("12.50"), Unit.CURRENCY), "currency"
+    )
+
     # Static type errors, caught before evaluation.
     _expect_error("$5 + 3", "not defined for a currency amount")
     _expect_error("if(1, 2, 3)", "boolean condition")
@@ -130,6 +141,9 @@ def _():
     _expect_error("1 < 2 < 3", "Chained comparisons")
     _expect_error("2026-01-01 + 2h", "Use a datetime instead")
     _expect_error("missing + 1", "Unknown variable")
+    _expect_error("ceil(3h, 1mo)", "no fixed length")
+    _expect_error("ceil(5, 0)", "must be positive")
+    _expect_error("ceil($5, 2)", "same kind of value")
 
     # Percentages: lexed as literals, applied via *.
     _check("$5.2 * 1.5%", Quantity(Decimal("0.08"), Unit.CURRENCY), "currency")
@@ -244,7 +258,8 @@ def _():
     `if(shipment > 2t, $100, $150)` ·
     `sum(2h, 45min, 30min)` ·
     `$5.2 * 1.5%` ·
-    `price - price * 15%`
+    `price - price * 15%` ·
+    `ceil(3h + 20min, 1h)`
 
     **These fail the type check (on purpose):**
     `$5 + 3` ·

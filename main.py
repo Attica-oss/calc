@@ -55,7 +55,7 @@ THEME = Theme(
     {
         "calc.prompt": "bold cyan",
         "calc.value": "bold green",
-        "calc.currency": "bold #000080",
+        "calc.currency": "bold cyan",
         "calc.tonnage": "bold #ff8700",
         "calc.category": "dim",
         "calc.variable": "yellow",
@@ -139,9 +139,7 @@ def bind_variables(definitions: list[str]) -> dict:
         name = name.strip()
 
         if not separator or not expression.strip():
-            raise typer.BadParameter(
-                f"--var expects NAME=EXPRESSION, got {definition!r}"
-            )
+            raise typer.BadParameter(f"--var expects NAME=EXPRESSION, got {definition!r}")
 
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
             raise typer.BadParameter(f"{name!r} is not a valid variable name")
@@ -215,9 +213,7 @@ def run_repl(variables: dict) -> int:
 
         if line == "vars":
             if not variables:
-                console.print(
-                    "(no variables bound — use: let NAME = EXPR)", style="calc.info"
-                )
+                console.print("(no variables bound — use: let NAME = EXPR)", style="calc.info")
             for name, value in sorted(variables.items()):
                 console.print(
                     f"  [calc.variable]{name}[/calc.variable] = "
