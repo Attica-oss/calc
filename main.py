@@ -64,6 +64,8 @@ THEME = Theme(
         "calc.pointer": "red",
         "calc.source": "dim",
         "calc.info": "dim italic",
+        "calc.command": "bold magenta",
+        "calc.banner": "bold cyan",
     }
 )
 
@@ -71,6 +73,19 @@ console = Console(theme=THEME)
 error_console = Console(theme=THEME, stderr=True)
 
 PROMPT = "calc> "
+
+# figlet "ANSI Shadow" rendering of "calc"; each line is 33 columns
+# wide, so run_repl() falls back to plain text below that width.
+ASCII_ART = r"""
+ ██████╗ █████╗ ██╗      ██████╗
+██╔════╝██╔══██╗██║     ██╔════╝
+██║     ███████║██║     ██║
+██║     ██╔══██║██║     ██║
+╚██████╗██║  ██║███████╗╚██████╗
+ ╚═════╝╚═╝  ╚═╝╚══════╝ ╚═════╝
+""".strip("\n")
+
+ASCII_ART_WIDTH = max(len(line) for line in ASCII_ART.splitlines())
 
 LET_RE = re.compile(r"^\s*let\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$")
 
@@ -84,16 +99,58 @@ CATEGORY_STYLES = {
 
 REPL_HELP = """\
 Enter an expression to evaluate it. Commands:
-  let NAME = EXPR   bind a variable (e.g.  let price = $12.50)
-  -                 reuse the previous answer (shorthand for 'ans')
-  vars              list current variables
-  clear             clear the screen
-  reset             clear all bound variables, including ans
-  help              show this message
-  exit | quit       leave (Ctrl-D also works)
+  [calc.command]let[/calc.command] NAME = EXPR   bind a variable (e.g.  let price = $12.50)
+  [calc.command]-[/calc.command]                 reuse the previous answer (shorthand for 'ans')
+  [calc.command]vars[/calc.command]              list current variables
+  [calc.command]clear[/calc.command]             clear the screen
+  [calc.command]reset[/calc.command]             clear all bound variables, including ans
+  [calc.command]help[/calc.command]              show this message
+  [calc.command]exit[/calc.command] | [calc.command]quit[/calc.command]       leave (Ctrl-D also works)
 Note: a plain '=' is the equality operator (qty = 3 is a comparison);
-assignment always uses 'let'. The result of the last plain expression
+assignment always uses '[calc.command]let[/calc.command]'. The result of the last plain expression
 is also available as the variable 'ans'."""
+
+
+_ANSI_ESCAPE_RE = re.compile(r"(\x1b\[[0-9;]*m)")
+
+
+def readline_safe_prompt(out: Console, markup: str) -> str:
+    """Render rich markup to a prompt string GNU readline can use directly.
+
+    readline sizes the prompt from whatever string it's handed, to
+    know how many terminal columns to reserve when it redraws the
+    line (backspace, arrow keys, history recall). Rich's ANSI color
+    codes have zero visible width, but readline has no way to know
+    that unless each escape sequence is wrapped in \\001/\\002
+    ("start/end of non-printing characters") markers — without them,
+    readline either counts the codes as visible columns, or (if the
+    prompt is printed separately and a bare input() is used instead)
+    doesn't know about the prompt's width at all. Either way, its
+    internal cursor model drifts from the terminal's actual state and
+    redraws corrupt the line.
+    """
+
+    with out.capture() as capture:
+        out.print(markup, end="")
+
+    return _ANSI_ESCAPE_RE.sub(r"\001\1\002", capture.get())
+
+
+def clear_screen(out: Console) -> None:
+    """Clear the visible screen and, on a real terminal, the scrollback
+    buffer too.
+
+    rich's Console.clear() only sends ED2 (``\\x1b[2J``), which wipes
+    the visible screen but leaves scrollback intact — scrolling up
+    still shows everything. The ``clear`` shell command additionally
+    sends ED3 (``\\x1b[3J``), which is what users expect from 'clear'.
+    """
+
+    out.clear()
+
+    if out.is_terminal:
+        out.file.write("\x1b[3J")
+        out.file.flush()
 
 
 def value_style(category: str) -> str:
@@ -175,18 +232,22 @@ def run_repl(variables: dict) -> int:
     except ImportError:
         pass
 
-    console.print("calc — type 'help' for commands, 'exit' to leave.", style="calc.info")
+    if console.width >= ASCII_ART_WIDTH:
+        console.print(ASCII_ART, style="calc.banner")
+    else:
+        console.print("calc", style="calc.banner")
+
+    console.print(
+        "Type '[calc.command]help[/calc.command]' for commands, "
+        "'[calc.command]exit[/calc.command]' to leave.",
+        style="calc.info",
+    )
+
+    prompt = readline_safe_prompt(console, "[calc.prompt]calc>[/calc.prompt] ")
 
     while True:
         try:
-            # Print the colored prompt ourselves and read with a bare
-            # input(): readline uses the prompt string's raw length to
-            # position the cursor, and it can't tell rich's ANSI color
-            # codes are zero-width, so a colored prompt passed straight
-            # to input() throws off redraws (e.g. pressing the left
-            # arrow blanks the prompt).
-            console.print("[calc.prompt]calc>[/calc.prompt] ", end="")
-            line = input().strip()
+            line = input(prompt).strip()
         except EOFError:
             console.print()
             return 0
@@ -205,7 +266,7 @@ def run_repl(variables: dict) -> int:
             continue
 
         if line == "clear":
-            console.clear()
+            clear_screen(console)
             continue
 
         if line == "reset":
