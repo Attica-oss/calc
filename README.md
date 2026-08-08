@@ -309,6 +309,7 @@ uv run main.py --var price='$12.50' --var qty=3 --var total='price * qty' total
 uv run ruff check .          # lint
 uv run main.py "1 + 2"        # run the CLI
 uv run marimo edit src/notebook.py   # explore the engine interactively, with inline tests
+uv run marimo edit src/vision.py     # ROADMAP.md playground: today's engine + a table-workflow preview
 ```
 
 ### Project structure
@@ -319,6 +320,9 @@ src/engine_cli.py      the expression engine: tokenizer, parser, type checker,
                         evaluator, formatter — imported by main.py and the notebook
 src/notebook.py         a marimo notebook importing engine_cli.py, with
                          inline tests and an interactive UI
+src/vision.py            a marimo notebook testing ROADMAP.md: a widget-driven
+                         playground for today's engine, plus a table-workflow
+                         (import/filter/extend/groupby/export) preview
 ```
 
 `src/engine_cli.py` is the single source of truth for the engine; both
