@@ -455,6 +455,14 @@ register_binary("/", "number", "complex", "complex", complex_divide)
 # different kinds of thing, consistently with every other unit type.
 
 
+# ---- Text ----------------------------------------------------------
+#
+# Concatenation only — text doesn't join the generic unit loop or the
+# numeric one, and unary +/-text is deliberately unregistered (a clean
+# type error), same treatment as e.g. unary minus on a boolean.
+
+register_binary("+", "text", "text", "text", lambda a, b: a + b)
+
 # ---- Comparisons -------------------------------------------------
 
 
@@ -479,6 +487,7 @@ for _category in (
     "currency",
     "tonnage",
     "percent",
+    "text",
 ):
     for _op, _impl in _COMPARATORS.items():
         register_binary(_op, _category, _category, "boolean", _impl)

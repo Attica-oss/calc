@@ -18,10 +18,13 @@ import pytest
 
 from src.engine import (
     Blank,
+    Column,
     Complex,
     Duration,
     ExpressionError,
     Quantity,
+    Table,
+    Type,
     Unit,
     category_of,
     evaluate_expression,
@@ -471,6 +474,218 @@ def test_function_type_errors(expression, fragment):
     assert_expression_error(expression, fragment)
 
 
+# Text
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected_value", "expected_category"),
+    [
+        ('"hello"', "hello", "text"),
+        ('""', "", "text"),
+        ('"a\\"b"', 'a"b', "text"),
+        ('"a\\\\b"', "a\\b", "text"),
+        ('"line1\\nline2"', "line1\nline2", "text"),
+        ('"foo" + "bar"', "foobar", "text"),
+        ('"a" = "a"', True, "boolean"),
+        ('"a" <> "b"', True, "boolean"),
+        ('"a" < "b"', True, "boolean"),
+        ('"b" > "a"', True, "boolean"),
+        ('"a" <= "a"', True, "boolean"),
+        ('"a" >= "a"', True, "boolean"),
+    ],
+)
+def test_text_expressions(expression, expected_value, expected_category):
+    assert_eval(expression, expected_value, expected_category)
+
+
+@pytest.mark.parametrize(
+    ("expression", "fragment"),
+    [
+        ('"a" - "b"', "not defined"),
+        ('-"a"', "cannot be applied"),
+        ('"unterminated', "Unexpected character"),
+    ],
+)
+def test_text_type_errors(expression, fragment):
+    assert_expression_error(expression, fragment)
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected_value"),
+    [
+        ("5::text", "5"),
+        ("$5.20::text", "$5.20"),
+        ("2.4t::text", "2.400 t"),
+        ("2026-05-01::text", "2026-05-01"),
+        ("(1 = 1)::text", "TRUE"),
+        ('"already text"::text', "already text"),
+    ],
+)
+def test_casts_to_text(expression, expected_value):
+    assert_eval(expression, expected_value, "text")
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected_value", "expected_category"),
+    [
+        ('"5"::int', 5, "int"),
+        ('"5.9"::int', 5, "int"),
+        ('"5.5"::decimal', Decimal("5.5"), "decimal"),
+        ('"12.50"::currency', Quantity(Decimal("12.50"), Unit.CURRENCY), "currency"),
+        ('"2.4"::tonnage', Quantity(Decimal("2.4"), Unit.TONNAGE), "tonnage"),
+        ('"5"::percent', Quantity(Decimal("0.05"), Unit.PERCENT), "percent"),
+        ('"true"::boolean', True, "boolean"),
+        ('"FALSE"::boolean', False, "boolean"),
+        ('"2026-01-05"::date', date(2026, 1, 5), "date"),
+        ('"2026-01-05T14:30:00"::datetime', datetime(2026, 1, 5, 14, 30), "datetime"),
+        ('"14:30:00"::time', time(14, 30), "time"),
+    ],
+)
+def test_casts_from_text(expression, expected_value, expected_category):
+    assert_eval(expression, expected_value, expected_category)
+
+
+@pytest.mark.parametrize(
+    ("expression", "fragment"),
+    [
+        ('"abc"::int', "not a valid decimal number"),
+        ('"abc"::decimal', "not a valid decimal number"),
+        ('"maybe"::boolean', "not a valid boolean"),
+        ('"not-a-date"::date', "not a valid date"),
+    ],
+)
+def test_casts_from_text_errors(expression, fragment):
+    assert_expression_error(expression, fragment)
+
+
+def test_percent_text_cast_matches_numeric_percent_cast():
+    # "5"::percent should mean the same thing as 5::percent ("5
+    # percent"), not the raw ratio 5.0 — both round-trip through the
+    # same registered decimal->percent implementation.
+    assert evaluate_expression('"5"::percent').value == evaluate_expression(
+        "5::percent"
+    ).value
+
+
+# Table and Column
+
+
+def test_table_and_column_construction():
+    result = evaluate_expression(
+        'table(column("vessel", "Njord", "Selkie"), column("qty", 3.4t, 2.1t))'
+    )
+    assert result.category == Type(
+        "table",
+        fields=(("vessel", Type("text")), ("qty", Type("tonnage"))),
+    )
+    table = result.value
+    assert isinstance(table, Table)
+    assert table.row_count == 2
+    assert table.columns == (("Njord", "Selkie"), (
+        Quantity(Decimal("3.4"), Unit.TONNAGE),
+        Quantity(Decimal("2.1"), Unit.TONNAGE),
+    ))
+
+
+def test_column_construction():
+    result = evaluate_expression('column("qty", 1, 2, 3)')
+    assert result.category == Type("column", fields=(("qty", Type("int")),))
+    assert result.value == Column(
+        name="qty", values=(1, 2, 3), element_type=Type("int")
+    )
+
+
+@pytest.mark.parametrize(
+    ("expression", "fragment"),
+    [
+        ("column(name, 1, 2)", "Unknown variable"),
+        ('column("x", 1, "y")', "same type"),
+        ('column("x")', "requires at least 2 arguments"),
+        ('table(column("a", 1), 5)', "must all be column()"),
+        ('table(column("a", 1), column("A", 2))', "duplicate column name"),
+    ],
+)
+def test_table_and_column_type_errors(expression, fragment):
+    assert_expression_error(expression, fragment)
+
+
+def test_table_mismatched_column_lengths_is_a_runtime_error():
+    assert_expression_error(
+        'table(column("a", 1, 2), column("b", 1))',
+        "must all have the same number of rows",
+    )
+
+
+def test_table_field_access_and_rowcount():
+    variables = {
+        "t": evaluate_expression(
+            'table(column("vessel", "Njord", "Selkie"), column("qty", 3.4t, 2.1t))'
+        ).value
+    }
+
+    column_result = evaluate_expression("t::qty", variables)
+    assert column_result.category == Type("column", fields=(("qty", Type("tonnage")),))
+    assert column_result.value.values == (
+        Quantity(Decimal("3.4"), Unit.TONNAGE),
+        Quantity(Decimal("2.1"), Unit.TONNAGE),
+    )
+
+    # Field access is case-insensitive, same as cast targets generally.
+    assert evaluate_expression("t::VESSEL", variables).value.name == "vessel"
+
+    assert evaluate_expression("rowcount(t)", variables).value == 2
+
+    assert_expression_error("t::bogus", "Cannot cast", variables)
+
+
+def test_aggregate_functions_over_a_column():
+    variables = {
+        "t": evaluate_expression(
+            'table(column("qty", 3.4t, 2.1t, 4.4t))'
+        ).value
+    }
+
+    assert_eval("sum(t::qty)", Quantity(Decimal("9.9"), Unit.TONNAGE), "tonnage", variables)
+    assert_eval("avg(t::qty)", Quantity(Decimal("3.3"), Unit.TONNAGE), "tonnage", variables)
+    assert_eval("min(t::qty)", Quantity(Decimal("2.1"), Unit.TONNAGE), "tonnage", variables)
+    assert_eval("max(t::qty)", Quantity(Decimal("4.4"), Unit.TONNAGE), "tonnage", variables)
+
+
+def test_aggregate_functions_over_an_int_column_stay_int():
+    variables = {"t": evaluate_expression('table(column("n", 1, 2, 3))').value}
+    assert_eval("sum(t::n)", 6, "int", variables)
+    assert_eval("min(t::n)", 1, "int", variables)
+    assert_eval("max(t::n)", 3, "int", variables)
+    assert_eval("avg(t::n)", Decimal(2), "decimal", variables)
+
+
+def test_rowcount_requires_a_table():
+    assert_expression_error("rowcount(5)", "rowcount() requires a table")
+
+
+# Type object semantics
+
+
+def test_flat_type_behaves_like_a_plain_string():
+    flat = Type("int")
+    assert flat == "int"
+    assert "int" == flat
+    assert flat in {"int", "decimal"}
+    assert hash(flat) == hash("int")
+
+
+def test_compound_types_compare_structurally():
+    schema = (("vessel", Type("text")), ("qty", Type("tonnage")))
+    a = Type("table", fields=schema)
+    b = Type("table", fields=schema)
+    c = Type("table", fields=(("vessel", Type("text")),))
+
+    assert a == b
+    assert a != c
+    assert a != "table"
+    assert a not in {"table"}
+
+
 # Variables and dependency tracking
 
 
@@ -515,6 +730,7 @@ def test_dependency_tracking_walks_into_casts_and_calls():
         (Complex(Decimal(1), Decimal(2)), "complex"),
         (Blank(), "blank"),
         (Quantity(Decimal(5), Unit.CURRENCY), "currency"),
+        ("some text", "text"),
     ],
 )
 def test_category_of(value, expected_category):
@@ -529,10 +745,28 @@ def test_category_of(value, expected_category):
         (Decimal("5.500"), "5.5"),
         (Decimal("5.000"), "5"),
         (1_234_567, "1,234,567"),
+        ("hello", "hello"),
     ],
 )
 def test_general_formatting(value, expected):
     assert format_result(value) == expected
+
+
+def test_column_formatting():
+    column = evaluate_expression('column("qty", 1, 2, 3)').value
+    assert format_result(column) == "qty: [1, 2, 3]"
+
+
+def test_table_formatting():
+    table = evaluate_expression(
+        'table(column("vessel", "Njord", "Selkie"), column("qty", 3.4t, 2.1t))'
+    ).value
+    assert format_result(table) == (
+        "vessel | qty    \n"
+        "-------+--------\n"
+        "Njord  | 3.400 t\n"
+        "Selkie | 2.100 t"
+    )
 
 
 # Error positions

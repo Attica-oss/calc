@@ -83,6 +83,44 @@ MULTIPLICATIVE_TOKENS = {
 
 MAX_NESTING = 60
 
+STRING_ESCAPES = {
+    '"': '"',
+    "\\": "\\",
+    "n": "\n",
+    "t": "\t",
+}
+
+
+def parse_string_literal(text: str, position: int) -> str:
+    """Unescape a STRING token's raw text (quotes included) into its value."""
+
+    body = text[1:-1]
+    characters = []
+    index = 0
+
+    while index < len(body):
+        character = body[index]
+
+        if character == "\\":
+            if index + 1 >= len(body):
+                raise ExpressionError("Trailing backslash in a string literal.", position)
+
+            escape = body[index + 1]
+
+            if escape not in STRING_ESCAPES:
+                raise ExpressionError(
+                    f"Unknown escape sequence '\\{escape}' in a string literal.",
+                    position,
+                )
+
+            characters.append(STRING_ESCAPES[escape])
+            index += 2
+        else:
+            characters.append(character)
+            index += 1
+
+    return "".join(characters)
+
 
 def parse_duration_literal(text: str, position: int) -> Duration:
     match = re.fullmatch(
@@ -348,6 +386,14 @@ class Parser:
 
             return Literal(value=INFINITY, position=token.position)
 
+        if token.kind == "STRING":
+            self.advance()
+
+            return Literal(
+                value=parse_string_literal(token.value, token.position),
+                position=token.position,
+            )
+
         if token.kind == "DATETIME":
             self.advance()
 
@@ -424,7 +470,7 @@ class Parser:
             return value
 
         raise ExpressionError(
-            "Expected a number, date, duration, variable, function, or '('.",
+            "Expected a number, date, duration, string, variable, function, or '('.",
             token.position,
         )
 

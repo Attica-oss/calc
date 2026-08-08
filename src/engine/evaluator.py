@@ -13,7 +13,7 @@ from .casts import CAST_RULES
 from .functions import FUNCTIONS
 from .operators import BINARY_RULES, UNARY_RULES
 from .parser import BinOp, Call, Cast, Literal, UnaryOp, Var, parse, variables_in
-from .values import ExpressionError, category_of, label
+from .values import Column, ExpressionError, Table, Type, category_of, label
 
 
 @dataclass
@@ -102,6 +102,23 @@ def check_types(node, variable_types: dict, functions: dict) -> str:
 
     if isinstance(node, Cast):
         source = check_types(node.value, variable_types, functions)
+
+        # Table field access (t::colname) isn't a fixed-vocabulary cast
+        # — the "target" is one of the table's own column names, known
+        # only from this particular table's schema — so it's resolved
+        # dynamically here, ahead of the static CAST_RULES dict, same
+        # spirit as the dispatch tables but keyed by this one Type's
+        # fields instead of a module-load-time registration.
+        if isinstance(source, Type) and source.fields and str.__eq__(source, "table"):
+            field = next(
+                ((name, field_type) for name, field_type in source.fields if name.lower() == node.target),
+                None,
+            )
+
+            if field is not None:
+                name, field_type = field
+                return Type("column", fields=((name, field_type),))
+
         rule = CAST_RULES.get((source, node.target))
 
         if rule is None:
@@ -149,6 +166,15 @@ def evaluate_node(node, environment: Environment):
 
         if isinstance(node, Cast):
             value = evaluate_node(node.value, environment)
+
+            if isinstance(value, Table):
+                names = [name.lower() for name, _ in value.schema]
+
+                if node.target in names:
+                    index = names.index(node.target)
+                    name, field_type = value.schema[index]
+                    return Column(name=name, values=value.columns[index], element_type=field_type)
+
             _, impl = CAST_RULES[(category_of(value), node.target)]
             return impl(value)
 

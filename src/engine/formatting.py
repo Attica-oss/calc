@@ -4,9 +4,11 @@ from decimal import Decimal
 
 from .values import (
     Blank,
+    Column,
     Complex,
     Duration,
     Quantity,
+    Table,
     Unit,
     is_date_only,
     is_datetime,
@@ -86,6 +88,36 @@ def format_complex(value: Complex) -> str:
     return f"{format_decimal(value.real)}{sign}{imaginary_text}i"
 
 
+def format_table(value: Table) -> str:
+    headers = [name for name, _ in value.schema]
+
+    if not headers:
+        return "(empty table)"
+
+    rows = [
+        [format_result(value.columns[column][row]) for column in range(len(headers))]
+        for row in range(value.row_count)
+    ]
+    widths = [
+        max(len(headers[i]), *(len(row[i]) for row in rows)) if rows else len(headers[i])
+        for i in range(len(headers))
+    ]
+
+    lines = [
+        " | ".join(headers[i].ljust(widths[i]) for i in range(len(headers))),
+        "-+-".join("-" * widths[i] for i in range(len(headers))),
+    ]
+    lines.extend(
+        " | ".join(row[i].ljust(widths[i]) for i in range(len(headers))) for row in rows
+    )
+
+    return "\n".join(lines)
+
+
+def format_column(value: Column) -> str:
+    return f"{value.name}: [{', '.join(format_result(v) for v in value.values)}]"
+
+
 def format_result(value) -> str:
     # bool is a subclass of int: check it first.
     if isinstance(value, bool):
@@ -94,8 +126,17 @@ def format_result(value) -> str:
     if isinstance(value, Blank):
         return "blank"  # Check if we can change to 'null'
 
+    if isinstance(value, str):
+        return value
+
     if isinstance(value, Complex):
         return format_complex(value)
+
+    if isinstance(value, Column):
+        return format_column(value)
+
+    if isinstance(value, Table):
+        return format_table(value)
 
     if isinstance(value, Quantity):
         if value.unit is Unit.CURRENCY:

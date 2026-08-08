@@ -9,10 +9,11 @@ spirit as the operator table, though: an unregistered combination is
 automatically a clean type error, no special-casing required.
 """
 
-from datetime import datetime, time
-from decimal import ROUND_DOWN
+from datetime import date, datetime, time
+from decimal import ROUND_DOWN, Decimal, InvalidOperation
 
-from .values import Quantity, Unit, to_decimal
+from .formatting import format_result
+from .values import ExpressionError, Quantity, Unit, to_decimal
 
 CAST_RULES: dict = {}
 
@@ -98,3 +99,94 @@ register_cast("int", "decimal", "decimal", lambda v: to_decimal(v))
 register_cast("decimal", "int", "int", lambda v: int(v.to_integral_value(rounding=ROUND_DOWN)))
 register_cast("int", "int", "int", lambda v: v)
 register_cast("decimal", "decimal", "decimal", lambda v: v)
+
+# ---- Text conversions ----------------------------------------------
+#
+# ::text always succeeds and always means "however format_result would
+# display it" — the same rendering the REPL and formulas already use,
+# so `"total: " + $5::text` reads the way you'd expect it to.
+
+for _category in (
+    "int",
+    "decimal",
+    "boolean",
+    "date",
+    "datetime",
+    "time",
+    "duration",
+    "currency",
+    "tonnage",
+    "percent",
+    "complex",
+    "blank",
+):
+    register_cast(_category, "text", "text", format_result)
+
+register_cast("text", "text", "text", lambda v: v)
+
+# The other direction has to parse, so it can fail — a loud, clear
+# ExpressionError rather than a silent garbage value, same spirit as
+# every other cast in this file. Built once on top of _text_to_decimal
+# and then composed with the *existing* decimal-based casts above
+# (int, currency, tonnage, percent) rather than re-deriving their
+# rounding/ratio semantics a second time — e.g. "5"::percent means "5
+# percent" (a ratio of 0.05), the same as 5::percent already means,
+# because it's literally the same registered implementation.
+
+
+def _text_to_decimal(text: str) -> Decimal:
+    try:
+        return Decimal(text.strip())
+    except InvalidOperation as error:
+        raise ExpressionError(f"{text!r} is not a valid decimal number.") from error
+
+
+def _compose_from_decimal(target: str):
+    _, decimal_impl = CAST_RULES[("decimal", target)]
+    return lambda text: decimal_impl(_text_to_decimal(text))
+
+
+register_cast("text", "decimal", "decimal", _text_to_decimal)
+
+for _target in ("int", "currency", "tonnage", "percent"):
+    register_cast("text", _target, _target, _compose_from_decimal(_target))
+
+_BOOLEAN_TEXT = {"true": True, "false": False}
+
+
+def _text_to_boolean(text: str) -> bool:
+    normalized = text.strip().lower()
+
+    if normalized not in _BOOLEAN_TEXT:
+        raise ExpressionError(f"{text!r} is not a valid boolean (use 'true' or 'false').")
+
+    return _BOOLEAN_TEXT[normalized]
+
+
+register_cast("text", "boolean", "boolean", _text_to_boolean)
+
+
+def _text_to_date(text: str) -> date:
+    try:
+        return date.fromisoformat(text.strip())
+    except ValueError as error:
+        raise ExpressionError(f"{text!r} is not a valid date.") from error
+
+
+def _text_to_datetime(text: str) -> datetime:
+    try:
+        return datetime.fromisoformat(text.strip())
+    except ValueError as error:
+        raise ExpressionError(f"{text!r} is not a valid datetime.") from error
+
+
+def _text_to_time(text: str) -> time:
+    try:
+        return time.fromisoformat(text.strip())
+    except ValueError as error:
+        raise ExpressionError(f"{text!r} is not a valid time.") from error
+
+
+register_cast("text", "date", "date", _text_to_date)
+register_cast("text", "datetime", "datetime", _text_to_datetime)
+register_cast("text", "time", "time", _text_to_time)

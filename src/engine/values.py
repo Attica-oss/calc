@@ -149,39 +149,129 @@ class Blank:
 # ---- The type system's vocabulary --------------------------------
 
 
-def category_of(value) -> str:
-    """Map a runtime value to its static type category."""
+class Type(str):
+    """A static type: a flat category name, or a compound one carrying
+    a schema (table, column).
+
+    Deliberately a *subclass* of str rather than a wrapper around one:
+    a flat ``Type("int")`` then hashes and compares exactly like the
+    plain string ``"int"`` everywhere the engine already compares
+    categories (``category == "int"``, ``category in {"int",
+    "decimal"}``, dict keys, f-string interpolation) — so every
+    existing dispatch-table registration and category comparison in
+    operators.py/functions.py/casts.py keeps working unchanged. Only
+    compound types (fields is not None) behave differently: they
+    compare and hash structurally, so two tables are equal only if
+    they have the same schema, and a compound type never collides
+    with a flat dispatch-table key even though its base name might
+    (e.g. ``Type("table", fields=...) != "table"``) — which is exactly
+    what makes arithmetic on a table an automatic, un-special-cased
+    type error: no registered rule's key can ever match it.
+    """
+
+    def __new__(cls, name: str, fields: tuple[tuple[str, Type], ...] | None = None):
+        self = str.__new__(cls, name)
+        self.fields = fields
+        return self
+
+    def __eq__(self, other):
+        if not isinstance(other, str):
+            return NotImplemented
+
+        return str.__eq__(self, other) and self.fields == getattr(other, "fields", None)
+
+    def __ne__(self, other):
+        result = self.__eq__(other)
+        return result if result is NotImplemented else not result
+
+    def __hash__(self):
+        # Always the plain string's hash, even for compound types:
+        # hash-equal-for-unequal-objects is fine (just a bucket
+        # collision, resolved by __eq__), but flat types *must* hash
+        # identically to the bare string for `category in {"int", ...}`
+        # and dict-key lookups against existing plain-string tables to
+        # keep working.
+        return str.__hash__(self)
+
+    def __str__(self):
+        if self.fields:
+            inner = ", ".join(f"{name}: {field_type}" for name, field_type in self.fields)
+            return f"{str.__str__(self)}{{{inner}}}"
+
+        return str.__str__(self)
+
+    def __repr__(self):
+        return f"Type({str(self)!r})"
+
+
+@dataclass(frozen=True)
+class Column:
+    """A single named, homogeneously typed column: the unit `table()`
+    is built from, and what `table::colname` field access returns.
+    """
+
+    name: str
+    values: tuple
+    element_type: Type
+
+
+@dataclass(frozen=True)
+class Table:
+    """An immutable columnar store: a schema plus one value-tuple per
+    column, all the same length. See `column()`/`table()` in
+    functions.py for the only way to construct one from an expression.
+    """
+
+    schema: tuple[tuple[str, Type], ...]
+    columns: tuple[tuple, ...]
+
+    @property
+    def row_count(self) -> int:
+        return len(self.columns[0]) if self.columns else 0
+
+
+def category_of(value) -> Type:
+    """Map a runtime value to its static type."""
 
     # bool is a subclass of int, so it must be checked first.
     if isinstance(value, bool):
-        return "boolean"
+        return Type("boolean")
 
     if isinstance(value, int):
-        return "int"
+        return Type("int")
 
     if isinstance(value, Decimal):
-        return "decimal"
+        return Type("decimal")
+
+    if isinstance(value, str):
+        return Type("text")
 
     if is_datetime(value):
-        return "datetime"
+        return Type("datetime")
 
     if is_date_only(value):
-        return "date"
+        return Type("date")
 
     if is_time_only(value):
-        return "time"
+        return Type("time")
 
     if isinstance(value, Duration):
-        return "duration"
+        return Type("duration")
 
     if isinstance(value, Complex):
-        return "complex"
+        return Type("complex")
 
     if isinstance(value, Blank):
-        return "blank"
+        return Type("blank")
 
     if isinstance(value, Quantity):
-        return value.unit.value
+        return Type(value.unit.value)
+
+    if isinstance(value, Column):
+        return Type("column", fields=((value.name, value.element_type),))
+
+    if isinstance(value, Table):
+        return Type("table", fields=value.schema)
 
     raise ExpressionError(f"Unsupported value type: {type(value).__name__}.")
 
@@ -199,6 +289,7 @@ CATEGORY_LABELS = {
     "percent": "a percentage",
     "complex": "a complex number",
     "blank": "a blank value",
+    "text": "a text value",
 }
 
 

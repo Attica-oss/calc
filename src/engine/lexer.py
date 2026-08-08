@@ -63,6 +63,12 @@ TOKEN_RE = re.compile(
     |
     (?P<INFINITY_SYMBOL>∞)
     |
+    (?P<STRING>
+        "
+        (?:[^"\\]|\\.)*
+        "
+    )
+    |
     (?P<NUMBER>
         (?:\d+(?:\.\d*)?|\.\d+)
         (?:[eE][+-]?\d+)?

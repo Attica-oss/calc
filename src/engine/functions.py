@@ -12,13 +12,18 @@ from decimal import ROUND_CEILING, Decimal, InvalidOperation
 
 from .calendar_utils import timedelta_to_duration
 from .operators import _guard_indeterminate, compare_key
+from .parser import Literal
 from .values import (
     INFINITY,
     Blank,
+    Column,
     Complex,
     Duration,
     ExpressionError,
     Quantity,
+    Table,
+    Type,
+    category_of,
     negate_duration,
     to_decimal,
 )
@@ -46,6 +51,13 @@ def _fixed(category):
 
 
 NUMERIC_CATEGORIES = {"int", "decimal"}
+
+
+def _is_type(category, name: str) -> bool:
+    # Bare-name check, deliberately ignoring .fields: a compound Type's
+    # `==` is schema-sensitive (see values.Type), but here we only care
+    # whether this is "a column" / "a table" at all, any schema.
+    return isinstance(category, Type) and str.__eq__(category, name)
 
 
 # Hardcoded to 50 significant digits — comfortably past Decimal's
@@ -186,6 +198,18 @@ _ORDERABLE = {"date", "datetime", "time", "currency", "tonnage", "percent"}
 
 def _min_max_result(name):
     def result_type(categories, node):
+        if len(categories) == 1 and _is_type(categories[0], "column"):
+            _, element_type = categories[0].fields[0]
+
+            if element_type in NUMERIC_CATEGORIES or element_type in _ORDERABLE:
+                return element_type
+
+            _fail(
+                node,
+                f"{name}() over a column requires a number, date, datetime, "
+                "time, currency, tonnage, or percent column.",
+            )
+
         if all(category in NUMERIC_CATEGORIES for category in categories):
             return (
                 "int"
@@ -212,6 +236,9 @@ def _min_max_result(name):
 
 def _min_max_impl(chooser):
     def impl(values):
+        if len(values) == 1 and isinstance(values[0], Column):
+            values = values[0].values
+
         result = chooser(values, key=compare_key)
 
         # Static type says decimal whenever the arguments mix int
@@ -232,6 +259,21 @@ _SUMMABLE = {"currency", "tonnage", "percent", "duration", "complex"}
 
 
 def _sum_result(categories, node):
+    if len(categories) == 1 and _is_type(categories[0], "column"):
+        _, element_type = categories[0].fields[0]
+
+        if element_type in NUMERIC_CATEGORIES:
+            return "int" if element_type == "int" else "decimal"
+
+        if element_type in _SUMMABLE:
+            return element_type
+
+        _fail(
+            node,
+            "sum() over a column requires a numeric, quantity, duration, "
+            "or complex column.",
+        )
+
     if all(category in NUMERIC_CATEGORIES for category in categories):
         return "int" if all(category == "int" for category in categories) else "decimal"
 
@@ -248,6 +290,9 @@ def _sum_result(categories, node):
 
 
 def _sum_impl(values):
+    if len(values) == 1 and isinstance(values[0], Column):
+        values = values[0].values
+
     first = values[0]
 
     if isinstance(first, Quantity):
@@ -271,6 +316,20 @@ def _sum_impl(values):
 
 
 def _avg_result(categories, node):
+    if len(categories) == 1 and _is_type(categories[0], "column"):
+        _, element_type = categories[0].fields[0]
+
+        if element_type in NUMERIC_CATEGORIES:
+            return "decimal"
+
+        if element_type in {"currency", "tonnage", "percent", "complex"}:
+            return element_type
+
+        _fail(
+            node,
+            "avg() over a column requires a numeric, quantity, or complex column.",
+        )
+
     if all(category in NUMERIC_CATEGORIES for category in categories):
         return "decimal"
 
@@ -288,6 +347,9 @@ def _avg_result(categories, node):
 
 
 def _avg_impl(values):
+    if len(values) == 1 and isinstance(values[0], Column):
+        values = values[0].values
+
     count = len(values)
     first = values[0]
 
@@ -488,6 +550,87 @@ def _days_between_result(categories, node):
 # it needs a blank/null value in the type system first, which it now
 # has, so it's a lazy-free, ordinary FunctionSpec like the others.
 
+# ---- column / table / rowcount --------------------------------------
+#
+# No new grammar: table() is built entirely out of the existing
+# function-call syntax. A column's name has to be known *statically*
+# (it becomes part of the result Type's schema), so — same trick as
+# ceil()/if() reading their own `node` for extra validation —
+# column()'s result_type inspects node.args[0] directly rather than
+# just its category, and rejects anything that isn't a literal string.
+
+
+def _column_result(categories, node):
+    name_node = node.args[0]
+
+    if not isinstance(name_node, Literal) or not isinstance(name_node.value, str):
+        _fail(node, "column()'s first argument must be a literal text column name.")
+
+    value_categories = categories[1:]
+    first = value_categories[0]
+
+    if any(category != first for category in value_categories):
+        _fail(node, "column()'s values must all be the same type.")
+
+    return Type("column", fields=((name_node.value, first),))
+
+
+def _column_impl(values):
+    name = values[0]
+    elements = tuple(values[1:])
+    return Column(name=name, values=elements, element_type=category_of(elements[0]))
+
+
+def _table_result(categories, node):
+    fields = []
+    seen_lower = set()
+
+    for category in categories:
+        if not _is_type(category, "column"):
+            _fail(node, "table()'s arguments must all be column().")
+
+        name, element_type = category.fields[0]
+
+        # Case-insensitive: field access (t::colname) is
+        # case-insensitive too, so "Qty" and "qty" coexisting would
+        # make ::qty ambiguous.
+        if name.lower() in seen_lower:
+            _fail(node, f"table() has a duplicate column name: {name!r}.")
+
+        seen_lower.add(name.lower())
+        fields.append((name, element_type))
+
+    return Type("table", fields=tuple(fields))
+
+
+def _table_impl(values):
+    columns = values
+    length = len(columns[0].values)
+
+    for column in columns[1:]:
+        if len(column.values) != length:
+            raise ExpressionError(
+                "table()'s columns must all have the same number of rows "
+                f"({columns[0].name!r} has {length}, {column.name!r} has "
+                f"{len(column.values)})."
+            )
+
+    schema = tuple((column.name, column.element_type) for column in columns)
+    data = tuple(column.values for column in columns)
+    return Table(schema=schema, columns=data)
+
+
+def _rowcount_result(categories, node):
+    if not _is_type(categories[0], "table"):
+        _fail(node, "rowcount() requires a table.")
+
+    return "int"
+
+
+def _rowcount_impl(values):
+    return values[0].row_count
+
+
 FUNCTIONS = {
     "today": FunctionSpec(
         "today",
@@ -545,4 +688,7 @@ FUNCTIONS = {
         _days_between_result,
         lambda values: (values[1] - values[0]).days,
     ),
+    "column": FunctionSpec("column", 2, None, False, _column_result, _column_impl),
+    "table": FunctionSpec("table", 1, None, False, _table_result, _table_impl),
+    "rowcount": FunctionSpec("rowcount", 1, 1, False, _rowcount_result, _rowcount_impl),
 }
