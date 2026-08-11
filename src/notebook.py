@@ -9,7 +9,7 @@ with app.setup:
 
     import marimo as mo
 
-    from .engine import (
+    from engine import (
         Blank,
         Complex,
         Duration,
@@ -34,6 +34,7 @@ def _():
     engine's inline test suite on load, then gives you a live UI to
     try expressions against a handful of sample variables.
     """)
+    return
 
 
 @app.cell(hide_code=True)
@@ -43,6 +44,7 @@ def _():
     a tiny executable spec of the engine's behaviour.<br>
     They run on notebook load; the cell renders a checkmark when green.
     """)
+    return
 
 
 @app.cell
@@ -256,6 +258,7 @@ def _():
     _expect_error("1 / 0", "divide by zero")
 
     mo.md("✅ All inline tests passed.")
+    return
 
 
 @app.cell(hide_code=True)
@@ -263,6 +266,7 @@ def _():
     mo.md(r"""
     # Sample variable bindings
     """)
+    return
 
 
 @app.cell
@@ -327,6 +331,7 @@ def _(expression_input, variables):
             _output = mo.callout(_error.message, kind="warn")
 
     _output
+    return
 
 
 @app.cell
@@ -359,6 +364,7 @@ def _():
     `blank() + 5` ·
     `z < 3+4i`
     """)
+    return
 
 
 if __name__ == "__main__":

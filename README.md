@@ -135,6 +135,11 @@ of the last plain expression is always available as `ans`.
 | `percent`   | `1.5%`                   | stored as a ratio, applied via `*`      |
 | `complex`   | `4i`, `3+4i`             | bare `i` with no glued digits is still an ordinary variable name |
 | `blank`     | `blank()`                | the one "missing value" marker — see below |
+| `text`      | `"hello"`                | UTF-8 string; see below                 |
+| `char`      | `0x2B`                   | one Unicode codepoint, hex literal only — see below |
+| `table`     | `table(column(...), ...)` | columnar, statically schema'd — see [Tables](#tables) below |
+| `array`     | `array(1, 2, 3)`          | a headerless `Column` — see [Arrays and matrices](#arrays-and-matrices) below |
+| `matrix`    | `matrix(array(...), ...)`   | a headerless, homogeneous 2D grid — see below |
 
 `3.14159...` and `2.71828...` are available as `pi()` and `e()` (function
 calls, not bare identifiers, so they can never shadow a variable you
@@ -184,11 +189,69 @@ That's the "type safe" part: a blank value can never silently act like
 `0` or `""` in a calculation the way it might in a spreadsheet — you
 have to explicitly unwrap it with `coalesce()` first.
 
+### Text
+
+`"double-quoted"` strings, with `\"`, `\\`, `\n`, `\t` escapes.
+Supports `+` (concatenation) and all six comparisons (`=  <>  <  <=  >
+>=`, ordinary lexicographic ordering) — nothing else; unary `+`/`-` and
+every other operator are deliberately unregistered, the same treatment
+unary minus on a boolean gets.
+
+```
+"foo" + "bar"              # "foobar"
+"a" < "b"                    # TRUE
+"a" - "b"                      # error — text has no subtraction
+```
+
+Every type casts *to* text (`::TEXT`, the same rendering the REPL
+prints), and text casts back to every scalar type by parsing — the
+pair that makes typed CSV import possible, cell by cell:
+
+```
+5::TEXT                    # "5"
+$5.20::TEXT                  # "$5.20"
+"12.50"::CURRENCY               # $12.50
+"2026-01-05"::DATE                 # 2026-01-05
+"true"::BOOLEAN                       # TRUE
+"abc"::INT                               # error — 'abc' is not a valid decimal number
+```
+
+### Char
+
+A single Unicode codepoint — a distinct type, not text of length one.
+The only literal syntax is hex: `0x2B` (a leading `0x`/`0X`, then hex
+digits), any valid Unicode scalar value. Supports all six comparisons
+(ordered by codepoint) and nothing else — no concatenation, no
+arithmetic; combine with text explicitly via `::TEXT`.
+
+```
+0x2B                # +  (char)
+0x2B < 0x2C           # TRUE
+0x2B + 0x2C             # error — char has no arithmetic
+```
+
+Casts to/from `text` and `int` (the codepoint), both directions:
+
+```
+0x2B::TEXT           # "+"
+0x2B::INT              # 43
+43::CHAR                  # +
+"+"::CHAR                   # +
+"ab"::CHAR                    # error — not a single character
+0x110000                        # error — not a valid Unicode codepoint
+```
+
 ### Operators
 
 `+  -  *  /  //  %  **` and comparisons `=  <>  <  <=  >  >=`. Chained
-comparisons (`1 < 2 < 3`) are rejected — write `1 < 2 and 2 < 3` style
-logic with `if()` instead.
+comparisons (`1 < 2 < 3`) are rejected — write `and(1 < 2, 2 < 3)`
+instead (see `and`/`or`/`not` below).
+
+There's no infix `and`/`or`/`not` — this language has no reserved
+words at all (even `if`/`sum`/`pi` can be used as variable names, since
+a bare identifier is only ever a function call when followed by `(`),
+and infix logical keywords would be the first exception. `and()`/
+`or()`/`not()` are ordinary functions instead — see Functions below.
 
 The type checker enforces sensible combinations only:
 
@@ -230,6 +293,9 @@ $5.20 * 1.5%             # $0.08    — percentages apply, Excel-style
 | `coalesce(x, default)`            | `x`, or `default` if `x` is blank                    |
 | `if(cond, then, else)`         | lazy — the untaken branch is never evaluated       |
 | `days_between(date, date)`     | whole days between two dates, as an `int`          |
+| `and(...)` / `or(...)`           | variadic, lazy/short-circuiting — see [Operators](#operators) above |
+| `not(x)`                           | boolean negation                                     |
+| `dayname(date[, "%a"\|"%A"])`         | 3-letter weekday name by default, full name with `"%A"` |
 
 `ceil()` is Excel's `CEILING` rather than a plain math ceiling: it needs
 a second argument to round up *to*, since "round up" is meaningless for
@@ -277,6 +343,14 @@ $5.15::DECIMAL                           # 5.15
 | `CURRENCY` / `TONNAGE`                            | `int`, `decimal`                              | wraps the number in that unit                              |
 | `PERCENT`                                           | `int`, `decimal`                                | read the way `%` reads a literal — `5::PERCENT` is `5%`, not `500%` |
 | `INT`                                                 | `decimal`                                         | truncates toward zero (not `round()`'s half-up)                       |
+| `TEXT`                                                  | any scalar type                                     | the same rendering `format_result()`/the REPL prints                    |
+| `INT` / `DECIMAL` / `CURRENCY` / `TONNAGE` / `PERCENT`    | `text`                                                | parses the text; a bad parse is a clear error, not a crash                |
+| `BOOLEAN`                                                    | `text`                                                    | `"true"` / `"false"`, case-insensitive                                        |
+| `DATE` / `DATETIME` / `TIME`                                    | `text`                                                        | ISO 8601, the same format the literal syntax accepts                             |
+| `TEXT`                                                             | `char`                                                            | the character itself, e.g. `0x2B::TEXT` is `"+"`                                     |
+| `INT`                                                                | `char`                                                                | the codepoint, e.g. `0x2B::INT` is `43`                                                 |
+| `CHAR`                                                                  | `int`                                                                    | codepoint → char, range-checked                                                             |
+| `CHAR`                                                                    | `text`                                                                     | only valid for length-1 text                                                                    |
 
 `::` binds tighter than `**` and unary minus, so `-5::decimal` is
 `-(5::decimal)` and `2 ** 3::decimal` is `2 ** (3::decimal)` — it binds
@@ -290,6 +364,162 @@ mismatched types:
 ```
 5::DAY                 # error — a whole number has no day field to extract
 $5::TONNAGE               # error — no defined conversion between units
+```
+
+### Tables
+
+A `table` is an immutable, columnar, statically typed value — its type
+carries its schema, e.g. `table{vessel: text, qty: tonnage}`, and two
+tables are only the same type if their schemas match exactly.
+
+Build one out of columns:
+
+```
+column("vessel", "Njord", "Selkie")          # a column: text, 2 values
+table(
+  column("vessel", "Njord", "Selkie"),
+  column("qty", 3.4t, 2.1t)
+)                                              # table{vessel: text, qty: tonnage}
+```
+
+A column's name has to be a literal string — it becomes part of the
+schema, so it must be known before anything runs. Every column passed
+to `table()` must have the same number of values, and column names
+can't collide even by case (`::colname` field access, below, is
+case-insensitive).
+
+`::colname` extracts a column, reusing the same `::` operator every
+other cast uses, just with a table's own column name in place of a
+fixed keyword like `DAY` or `DECIMAL`:
+
+```
+t::qty              # the qty column, as a Column value
+sum(t::qty)            # sum/avg/min/max all accept a single column argument
+rowcount(t)               # number of rows, as an int
+```
+
+| Function              | Description                                    |
+| ----------------------- | ------------------------------------------------ |
+| `column(name, v...)`      | build a named column from literal values           |
+| `table(col...)`             | build a table from one or more `column()`s           |
+| `rowcount(t)`                  | number of rows in a table                              |
+
+### Table verbs
+
+Five of ROADMAP.md's six composable verbs are real calc functions, not
+a separate mini-language: `filter`, `select`, `extend`, `sort`,
+`groupby`. (`lookup` — joins — isn't built yet.)
+
+| Verb                                                    | Result                                            |
+| ---------------------------------------------------------| ---------------------------------------------------|
+| `filter(t, row_expr)`                                       | rows where `row_expr` is `TRUE`                        |
+| `select(t, "col", ...)`                                        | a subset/reorder of columns, by literal name             |
+| `extend(t, "name", row_expr)`                                     | `t` plus one computed column                                |
+| `sort(t, row_expr[, "asc"\|"desc"])`                                 | rows reordered by `row_expr`, ascending by default             |
+| `groupby(t, "group_col", "agg_col", "agg_fn")`                          | one row per distinct `group_col` value, aggregated                |
+
+`filter`/`extend`/`sort` take a *row expression*, evaluated once per
+row — and inside one, a column is written `[colname]`, not a bare
+name. That's deliberate, not decoration — ROADMAP.md's own words:
+"lexical `[column]` row scope — no DAX-style implicit context, ever."
+A bare name inside a row expression is still an ordinary outer
+variable; `[colname]` is always that row's value; the two never
+collide, even when a variable happens to share a column's name:
+
+```
+let qty = 2.5t
+filter(t, [qty] > qty)     # each row's own qty, compared against
+                              # the *outer* qty — not the same thing
+```
+
+`select`/`groupby` don't need `[...]` at all — their arguments (column
+names, an aggregate function) are compile-time strings, the same way a
+`column()`'s name is.
+
+```
+filter(t, [qty] > 2t)
+extend(t, "value", [qty] * [price])
+sort(t, [value], "desc")
+groupby(t, "vessel", "qty", "sum")     # "sum" | "avg" | "min" | "max" | "count"
+```
+
+Verbs compose like anything else — nest them into a pipeline:
+
+```
+select(
+  sort(
+    extend(filter(t, [qty] > 1.5t), "value", [qty] * [price]),
+    [value], "desc"
+  ),
+  "vessel", "value"
+)
+```
+
+### Arrays and matrices
+
+An `array` is a `Column` with no name — same idea, minus the header.
+A `matrix` is a headerless 2D grid, but unlike `Table` (one type per
+column) it's **homogeneous**: every cell the same type end to end,
+leaving room for real matrix arithmetic later (not built yet — today
+it's construction, indexing, and introspection only, no `+`/`*`/`=`).
+
+```
+array(1, 2, 3)                          # [1, 2, 3]  (array{int})
+matrix(array(1, 2, 3), array(4, 5, 6))    # a 2x3 matrix, rows first
+```
+
+Indexing is `at(container, index...)`, not `[i]` bracket syntax — that
+syntax is already spoken for (`[colname]` inside a table verb's row
+expression), and function-call indexing needs no grammar at all, the
+same reasoning `column()`/`table()`/`select()` already followed.
+**1-indexed** (`at(arr, 1)` is the first element), matching the
+Excel/DAX vocabulary the rest of this section borrows from, not
+Python's 0-indexing:
+
+```
+at(array(10, 20, 30), 2)                  # 20
+at(matrix(array(1, 2), array(3, 4)), 2, 1)  # 3  — row 2, column 1
+length(array(1, 2, 3))                        # 3
+rowcount(m) / colcount(m)                       # also work on a matrix
+```
+
+`array` plugs into `sum`/`avg`/`min`/`max` exactly the way a `Column`
+does — pass it as the only argument and it's unwrapped:
+
+```
+sum(array(1t, 2t, 3t))       # 6.000 t
+min(array("b", "a", "c"))      # "a"
+```
+
+### Time intelligence
+
+`startofmonth`/`endofmonth`/`startofquarter`/`endofquarter`/
+`startofyear`/`endofyear` — DAX's date-boundary vocabulary,
+reimplemented as ordinary explicit functions rather than something
+relying on DAX's *implicit filter context*, which this language
+deliberately doesn't have (see [Table verbs](#table-verbs) above — the
+same "lexical, not implicit" principle `[colname]` row scope already
+follows). `datetime` in preserves `datetime` out, at midnight of the
+resulting date.
+
+```
+startofmonth(2026-08-08)      # 2026-08-01
+endofmonth(2026-08-08)          # 2026-08-31
+endofmonth(2024-02-15)            # 2024-02-29  — leap year
+startofquarter(2026-08-08)          # 2026-07-01
+startofyear(2026-08-08)               # 2026-01-01
+dayname(2026-08-08)                     # "Sat"
+dayname(2026-08-08, "%A")                 # "Saturday"
+```
+
+A DAX `TOTALYTD` is just these composed with `filter`/`sum`/`and`
+(see [Table verbs](#table-verbs)) — a real total, not a canned
+function:
+
+```
+sum(
+  filter(t, and([date] >= startofyear(asof), [date] <= asof))::amount
+)
 ```
 
 ### Variables
@@ -309,6 +539,7 @@ uv run main.py --var price='$12.50' --var qty=3 --var total='price * qty' total
 uv run ruff check .          # lint
 uv run main.py "1 + 2"        # run the CLI
 uv run marimo edit src/notebook.py   # explore the engine interactively, with inline tests
+uv run marimo edit src/vision.py     # ROADMAP.md playground: today's engine + a table-workflow preview
 ```
 
 ### Project structure
@@ -319,6 +550,9 @@ src/engine_cli.py      the expression engine: tokenizer, parser, type checker,
                         evaluator, formatter — imported by main.py and the notebook
 src/notebook.py         a marimo notebook importing engine_cli.py, with
                          inline tests and an interactive UI
+src/vision.py            a marimo notebook testing ROADMAP.md: a widget-driven
+                         playground for today's engine, plus a table-workflow
+                         (import/filter/extend/groupby/export) preview
 ```
 
 `src/engine_cli.py` is the single source of truth for the engine; both
