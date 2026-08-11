@@ -169,7 +169,7 @@ class Type(str):
     type error: no registered rule's key can ever match it.
     """
 
-    def __new__(cls, name: str, fields: tuple[tuple[str, Type], ...] | None = None):
+    def __new__(cls, name: str, fields: tuple[tuple[str | None, Type], ...] | None = None):
         self = str.__new__(cls, name)
         self.fields = fields
         return self
@@ -195,6 +195,12 @@ class Type(str):
 
     def __str__(self):
         if self.fields:
+            # A single unnamed field (array/matrix: no header at all,
+            # just an element type) renders as e.g. "array{decimal}"
+            # rather than "array{None: decimal}".
+            if len(self.fields) == 1 and self.fields[0][0] is None:
+                return f"{str.__str__(self)}{{{self.fields[0][1]}}}"
+
             inner = ", ".join(f"{name}: {field_type}" for name, field_type in self.fields)
             return f"{str.__str__(self)}{{{inner}}}"
 
@@ -228,6 +234,41 @@ class Table:
     @property
     def row_count(self) -> int:
         return len(self.columns[0]) if self.columns else 0
+
+
+@dataclass(frozen=True)
+class Array:
+    """A headerless Column: an ordered, homogeneously typed sequence of
+    values with no name. See `array()` in functions.py.
+    """
+
+    values: tuple
+    element_type: Type
+
+
+@dataclass(frozen=True)
+class Matrix:
+    """A headerless, homogeneous 2D grid: every cell the same type,
+    unlike Table (which is one type per column). See `matrix()` in
+    functions.py, built from rows of `array()`.
+    """
+
+    element_type: Type
+    rows: tuple[tuple, ...]
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return (len(self.rows), len(self.rows[0]) if self.rows else 0)
+
+
+@dataclass(frozen=True, order=True)
+class Char:
+    """A single Unicode character, identified by codepoint. order=True
+    gives correct </<=/>/>= for free, since codepoint is the only
+    field — see the "char" entry in operators.py's comparison loop.
+    """
+
+    codepoint: int
 
 
 def category_of(value) -> Type:
@@ -273,6 +314,15 @@ def category_of(value) -> Type:
     if isinstance(value, Table):
         return Type("table", fields=value.schema)
 
+    if isinstance(value, Array):
+        return Type("array", fields=((None, value.element_type),))
+
+    if isinstance(value, Matrix):
+        return Type("matrix", fields=((None, value.element_type),))
+
+    if isinstance(value, Char):
+        return Type("char")
+
     raise ExpressionError(f"Unsupported value type: {type(value).__name__}.")
 
 
@@ -290,6 +340,7 @@ CATEGORY_LABELS = {
     "complex": "a complex number",
     "blank": "a blank value",
     "text": "a text value",
+    "char": "a character",
 }
 
 

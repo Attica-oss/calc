@@ -10,16 +10,26 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from decimal import ROUND_CEILING, Decimal, InvalidOperation
 
-from .calendar_utils import timedelta_to_duration
+from .calendar_utils import (
+    end_of_month,
+    end_of_quarter,
+    end_of_year,
+    start_of_month,
+    start_of_quarter,
+    start_of_year,
+    timedelta_to_duration,
+)
 from .operators import _guard_indeterminate, compare_key
 from .parser import Literal
 from .values import (
     INFINITY,
+    Array,
     Blank,
     Column,
     Complex,
     Duration,
     ExpressionError,
+    Matrix,
     Quantity,
     Table,
     Type,
@@ -38,8 +48,13 @@ class FunctionSpec:
     # (argument categories, call node) -> result category
     result_type: Callable
     # eager: impl(values) -> value
-    # lazy:  impl(argument nodes, environment, evaluate) -> value
+    # lazy:  impl(argument nodes, environment, evaluate, row_scope) -> value
     impl: Callable
+    # Index (>= 1) of the one argument that's a row expression, type-
+    # checked under a row scope derived from argument 0's (the table's)
+    # schema instead of the ambient scope. None for every function that
+    # isn't a row-scoped table verb (filter/extend/sort).
+    row_scope_arg: int | None = None
 
 
 def _fail(node, message):
@@ -58,6 +73,13 @@ def _is_type(category, name: str) -> bool:
     # `==` is schema-sensitive (see values.Type), but here we only care
     # whether this is "a column" / "a table" at all, any schema.
     return isinstance(category, Type) and str.__eq__(category, name)
+
+
+def _is_sequence_type(category) -> bool:
+    # column() and array() are the same idea minus a name — anywhere
+    # sum/avg/min/max accept a lone Column, they accept a lone Array
+    # too, unwrapped exactly the same way.
+    return _is_type(category, "column") or _is_type(category, "array")
 
 
 # Hardcoded to 50 significant digits — comfortably past Decimal's
@@ -193,12 +215,12 @@ def _round_impl(values):
 
 # ---- min / max ---------------------------------------------------
 
-_ORDERABLE = {"date", "datetime", "time", "currency", "tonnage", "percent"}
+_ORDERABLE = {"date", "datetime", "time", "currency", "tonnage", "percent", "text"}
 
 
 def _min_max_result(name):
     def result_type(categories, node):
-        if len(categories) == 1 and _is_type(categories[0], "column"):
+        if len(categories) == 1 and _is_sequence_type(categories[0]):
             _, element_type = categories[0].fields[0]
 
             if element_type in NUMERIC_CATEGORIES or element_type in _ORDERABLE:
@@ -236,7 +258,7 @@ def _min_max_result(name):
 
 def _min_max_impl(chooser):
     def impl(values):
-        if len(values) == 1 and isinstance(values[0], Column):
+        if len(values) == 1 and isinstance(values[0], (Column, Array)):
             values = values[0].values
 
         result = chooser(values, key=compare_key)
@@ -259,7 +281,7 @@ _SUMMABLE = {"currency", "tonnage", "percent", "duration", "complex"}
 
 
 def _sum_result(categories, node):
-    if len(categories) == 1 and _is_type(categories[0], "column"):
+    if len(categories) == 1 and _is_sequence_type(categories[0]):
         _, element_type = categories[0].fields[0]
 
         if element_type in NUMERIC_CATEGORIES:
@@ -290,7 +312,7 @@ def _sum_result(categories, node):
 
 
 def _sum_impl(values):
-    if len(values) == 1 and isinstance(values[0], Column):
+    if len(values) == 1 and isinstance(values[0], (Column, Array)):
         values = values[0].values
 
     first = values[0]
@@ -316,7 +338,7 @@ def _sum_impl(values):
 
 
 def _avg_result(categories, node):
-    if len(categories) == 1 and _is_type(categories[0], "column"):
+    if len(categories) == 1 and _is_sequence_type(categories[0]):
         _, element_type = categories[0].fields[0]
 
         if element_type in NUMERIC_CATEGORIES:
@@ -347,7 +369,7 @@ def _avg_result(categories, node):
 
 
 def _avg_impl(values):
-    if len(values) == 1 and isinstance(values[0], Column):
+    if len(values) == 1 and isinstance(values[0], (Column, Array)):
         values = values[0].values
 
     count = len(values)
@@ -530,10 +552,59 @@ def _if_result(categories, node):
     return categories[1]
 
 
-def _if_impl(args, environment, evaluate):
-    condition = evaluate(args[0], environment)
+def _if_impl(args, environment, evaluate, row_scope):
+    condition = evaluate(args[0], environment, row_scope)
     chosen = args[1] if condition else args[2]
-    return evaluate(chosen, environment)
+    return evaluate(chosen, environment, row_scope)
+
+
+# ---- and / or / not (lazy) -----------------------------------------
+#
+# and()/or() are function-call syntax, not infix `and`/`or` keywords —
+# this language has no reserved words at all today (even `if`/`sum`/
+# `pi` can be used as variable names, since a bare identifier is only
+# ever a Call when followed by '(') and infix logical operators would
+# be the first exception. Variadic, same reasoning as sum()/min()/
+# max() being variadic rather than forcing pairwise nesting. Lazy and
+# short-circuiting for the same hazard if() already guards against:
+# and(x <> 0, 1/x > 5) must not divide by zero when x = 0.
+
+
+def _and_or_result(name):
+    def result_type(categories, node):
+        if any(category != "boolean" for category in categories):
+            _fail(node, f"{name}()'s arguments must all be boolean.")
+
+        return "boolean"
+
+    return result_type
+
+
+def _and_impl(args, environment, evaluate, row_scope):
+    for argument in args:
+        if evaluate(argument, environment, row_scope) is not True:
+            return False
+
+    return True
+
+
+def _or_impl(args, environment, evaluate, row_scope):
+    for argument in args:
+        if evaluate(argument, environment, row_scope) is True:
+            return True
+
+    return False
+
+
+def _not_result(categories, node):
+    if categories[0] != "boolean":
+        _fail(node, "not() requires a boolean.")
+
+    return "boolean"
+
+
+def _not_impl(values):
+    return not values[0]
 
 
 # ---- days_between ------------------------------------------------
@@ -544,6 +615,70 @@ def _days_between_result(categories, node):
         _fail(node, "days_between() requires two dates.")
 
     return "int"
+
+
+# ---- dayname / time-intelligence date boundaries ---------------------
+
+_DAY_ABBREV = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_DAY_FULL = (
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+)
+
+
+def _dayname_result(categories, node):
+    if categories[0] not in ("date", "datetime"):
+        _fail(node, "dayname() requires a date or datetime.")
+
+    if len(categories) == 2:
+        pattern_node = node.args[1]
+
+        if not isinstance(pattern_node, Literal) or pattern_node.value not in (
+            "%a",
+            "%A",
+        ):
+            _fail(node, 'dayname()\'s pattern must be "%a" or "%A".')
+
+    return "text"
+
+
+def _dayname_impl(values):
+    value = values[0]
+    pattern = values[1] if len(values) == 2 else "%a"
+    names = _DAY_FULL if pattern == "%A" else _DAY_ABBREV
+
+    return names[value.weekday()]
+
+
+def _date_bound_spec(name, date_fn):
+    """A date -> date (or datetime -> datetime, at midnight) building
+    block — DAX's STARTOFMONTH/ENDOFMONTH/... vocabulary, reimplemented
+    as an ordinary explicit function rather than something relying on
+    implicit filter context.
+    """
+
+    def result_type(categories, node):
+        if categories[0] not in ("date", "datetime"):
+            _fail(node, f"{name}() requires a date or datetime.")
+
+        return categories[0]
+
+    def impl(values):
+        value = values[0]
+        is_datetime_value = isinstance(value, datetime)
+        result_date = date_fn(value.date() if is_datetime_value else value)
+
+        if is_datetime_value:
+            return datetime.combine(result_date, time())
+
+        return result_date
+
+    return FunctionSpec(name, 1, 1, False, result_type, impl)
 
 
 # coalesce() is deliberately absent from the "blank" comment above:
@@ -621,14 +756,436 @@ def _table_impl(values):
 
 
 def _rowcount_result(categories, node):
-    if not _is_type(categories[0], "table"):
-        _fail(node, "rowcount() requires a table.")
+    if not (_is_type(categories[0], "table") or _is_type(categories[0], "matrix")):
+        _fail(node, "rowcount() requires a table or matrix.")
 
     return "int"
 
 
 def _rowcount_impl(values):
-    return values[0].row_count
+    value = values[0]
+
+    if isinstance(value, Matrix):
+        return value.shape[0]
+
+    return value.row_count
+
+
+# ---- array / matrix ---------------------------------------------------
+#
+# array() is column() minus the name argument — same "all values the
+# same type" validation, no node-literal check needed since there's no
+# name to be a literal. matrix() is table() minus names, plus one
+# extra constraint table() doesn't have: every row must be the *same*
+# element type, not just the same length, since a matrix (unlike a
+# table) is homogeneous end to end.
+
+
+def _array_result(categories, node):
+    first = categories[0]
+
+    if any(category != first for category in categories):
+        _fail(node, "array()'s values must all be the same type.")
+
+    return Type("array", fields=((None, first),))
+
+
+def _array_impl(values):
+    return Array(values=tuple(values), element_type=category_of(values[0]))
+
+
+def _matrix_result(categories, node):
+    if not all(_is_type(category, "array") for category in categories):
+        _fail(node, "matrix()'s arguments must all be array().")
+
+    element_types = [category.fields[0][1] for category in categories]
+
+    if any(element_type != element_types[0] for element_type in element_types):
+        _fail(node, "matrix()'s rows must all have the same element type.")
+
+    return Type("matrix", fields=((None, element_types[0]),))
+
+
+def _matrix_impl(values):
+    rows = values
+    width = len(rows[0].values)
+
+    for row in rows[1:]:
+        if len(row.values) != width:
+            raise ExpressionError(
+                "matrix()'s rows must all have the same number of "
+                f"elements ({width} vs {len(row.values)})."
+            )
+
+    return Matrix(
+        element_type=rows[0].element_type,
+        rows=tuple(row.values for row in rows),
+    )
+
+
+def _colcount_result(categories, node):
+    if not (_is_type(categories[0], "table") or _is_type(categories[0], "matrix")):
+        _fail(node, "colcount() requires a table or matrix.")
+
+    return "int"
+
+
+def _colcount_impl(values):
+    value = values[0]
+
+    if isinstance(value, Matrix):
+        return value.shape[1]
+
+    return len(value.schema)
+
+
+def _length_result(categories, node):
+    if not _is_type(categories[0], "array"):
+        _fail(node, "length() requires an array.")
+
+    return "int"
+
+
+def _length_impl(values):
+    return len(values[0].values)
+
+
+def _at_result(categories, node):
+    base = categories[0]
+
+    if _is_type(base, "array"):
+        if len(categories) != 2:
+            _fail(node, "at() on an array takes exactly one index.")
+
+        if categories[1] != "int":
+            _fail(node, "at()'s index must be a whole number.")
+
+        return base.fields[0][1]
+
+    if _is_type(base, "matrix"):
+        if len(categories) != 3:
+            _fail(node, "at() on a matrix takes exactly two indices (row, column).")
+
+        if categories[1] != "int" or categories[2] != "int":
+            _fail(node, "at()'s indices must be whole numbers.")
+
+        return base.fields[0][1]
+
+    _fail(node, "at() requires an array or matrix.")
+
+
+def _at_impl(values):
+    base = values[0]
+
+    if isinstance(base, Array):
+        (index,) = values[1:]
+
+        if not 1 <= index <= len(base.values):
+            raise ExpressionError(
+                f"Index {index} is out of range for an array of length "
+                f"{len(base.values)} (at() is 1-indexed)."
+            )
+
+        return base.values[index - 1]
+
+    row, col = values[1:]
+    rows, cols = base.shape
+
+    if not 1 <= row <= rows or not 1 <= col <= cols:
+        raise ExpressionError(
+            f"Index ({row}, {col}) is out of range for a {rows}x{cols} "
+            "matrix (at() is 1-indexed)."
+        )
+
+    return base.rows[row - 1][col - 1]
+
+
+# ---- table verbs: filter / select / extend / sort / groupby ---------
+#
+# filter/extend/sort take a *row expression* — e.g. filter(t, [qty] >
+# 2t) — checked and evaluated once per row, with [colname] resolving
+# against that row via row_scope (see check_types/evaluate_node in
+# evaluator.py). They're FunctionSpec(..., lazy=True, row_scope_arg=N):
+# lazy because the row-expression AST node has to be re-evaluated once
+# per row rather than once total, row_scope_arg so the checker knows
+# which argument gets checked under the table's schema instead of the
+# ambient scope. select/groupby take only compile-time string-literal
+# arguments (column names, an aggregate-function name) — same
+# node-inspecting trick column()'s name argument already uses — so
+# they stay ordinary eager functions with no row scope involved.
+
+
+def _require_table(node, category, who):
+    if not _is_type(category, "table"):
+        _fail(node, f"{who}'s first argument must be a table.")
+
+
+def _row_dicts(table):
+    """Yield each row of `table` as a {lowercased column name: value} dict."""
+
+    names = [name.lower() for name, _ in table.schema]
+
+    for row_index in range(table.row_count):
+        yield {name: table.columns[i][row_index] for i, name in enumerate(names)}
+
+
+def _filter_result(categories, node):
+    _require_table(node, categories[0], "filter()")
+
+    if categories[1] != "boolean":
+        _fail(node, "filter()'s row expression must be a boolean.")
+
+    return categories[0]
+
+
+def _filter_impl(args, environment, evaluate, row_scope):
+    table = evaluate(args[0], environment, row_scope)
+    keep = [
+        index
+        for index, row in enumerate(_row_dicts(table))
+        if evaluate(args[1], environment, row) is True
+    ]
+    columns = tuple(tuple(column[i] for i in keep) for column in table.columns)
+    return Table(schema=table.schema, columns=columns)
+
+
+def _select_result(categories, node):
+    _require_table(node, categories[0], "select()")
+
+    by_lower = {name.lower(): (name, field_type) for name, field_type in categories[0].fields}
+    fields = []
+    seen_lower = set()
+
+    for name_node in node.args[1:]:
+        if not isinstance(name_node, Literal) or not isinstance(name_node.value, str):
+            _fail(node, "select()'s column names must be literal text.")
+
+        key = name_node.value.lower()
+
+        if key not in by_lower:
+            _fail(node, f"select(): {name_node.value!r} is not a column of this table.")
+
+        if key in seen_lower:
+            _fail(node, f"select() has a duplicate column name: {name_node.value!r}.")
+
+        seen_lower.add(key)
+        fields.append(by_lower[key])
+
+    return Type("table", fields=tuple(fields))
+
+
+def _select_impl(values):
+    table, *names_wanted = values
+    by_lower = {name.lower(): i for i, (name, _) in enumerate(table.schema)}
+    indices = [by_lower[name.lower()] for name in names_wanted]
+
+    return Table(
+        schema=tuple(table.schema[i] for i in indices),
+        columns=tuple(table.columns[i] for i in indices),
+    )
+
+
+def _extend_result(categories, node):
+    _require_table(node, categories[0], "extend()")
+
+    name_node = node.args[1]
+
+    if not isinstance(name_node, Literal) or not isinstance(name_node.value, str):
+        _fail(node, "extend()'s second argument must be a literal text column name.")
+
+    new_name = name_node.value
+
+    if any(name.lower() == new_name.lower() for name, _ in categories[0].fields):
+        _fail(node, f"extend() column name {new_name!r} already exists in this table.")
+
+    return Type("table", fields=categories[0].fields + ((new_name, categories[2]),))
+
+
+def _extend_impl(args, environment, evaluate, row_scope):
+    table = evaluate(args[0], environment, row_scope)
+    new_name = evaluate(args[1], environment, row_scope)
+
+    if table.row_count == 0:
+        # The checker already knows the new column's type from the row
+        # expression's structure; the evaluator, like every other node
+        # here, only ever re-derives categories from real values
+        # (category_of), and there are none to derive from.
+        raise ExpressionError(
+            "extend() cannot determine a new column's type on an empty table.",
+            args[2].position,
+        )
+
+    new_values = tuple(
+        evaluate(args[2], environment, row) for row in _row_dicts(table)
+    )
+
+    return Table(
+        schema=table.schema + ((new_name, category_of(new_values[0])),),
+        columns=table.columns + (new_values,),
+    )
+
+
+_SORTABLE = NUMERIC_CATEGORIES | _ORDERABLE
+
+
+def _sort_result(categories, node):
+    _require_table(node, categories[0], "sort()")
+
+    if categories[1] not in _SORTABLE:
+        _fail(
+            node,
+            "sort()'s row expression must produce a sortable value (a "
+            "number, date, datetime, time, currency, tonnage, percent, "
+            "or text).",
+        )
+
+    if len(categories) == 3:
+        direction_node = node.args[2]
+
+        if (
+            not isinstance(direction_node, Literal)
+            or not isinstance(direction_node.value, str)
+            or direction_node.value.lower() not in ("asc", "desc")
+        ):
+            _fail(node, 'sort()\'s third argument must be "asc" or "desc".')
+
+    return categories[0]
+
+
+def _sort_impl(args, environment, evaluate, row_scope):
+    table = evaluate(args[0], environment, row_scope)
+    descending = (
+        len(args) == 3
+        and evaluate(args[2], environment, row_scope).lower() == "desc"
+    )
+
+    keys = [
+        compare_key(evaluate(args[1], environment, row)) for row in _row_dicts(table)
+    ]
+    order = sorted(range(table.row_count), key=lambda i: keys[i], reverse=descending)
+    columns = tuple(tuple(column[i] for i in order) for column in table.columns)
+
+    return Table(schema=table.schema, columns=columns)
+
+
+_GROUPBY_AGG_FNS = ("sum", "avg", "min", "max", "count")
+
+
+def _agg_result_label(agg_fn, element_type):
+    # Mirrors _sum_result/_avg_result/_min_max_result's column-branch
+    # logic exactly, without needing a `node` (this is also called
+    # from _groupby_impl, an eager impl, which never has one) — a
+    # duplicated but tiny piece of that same logic, purely to derive a
+    # label, never to validate (that already happened in
+    # _groupby_result before evaluation started).
+    if agg_fn == "avg":
+        return "decimal" if element_type in NUMERIC_CATEGORIES else element_type
+
+    if element_type in NUMERIC_CATEGORIES:
+        return "int" if element_type == "int" else "decimal"
+
+    return element_type
+
+
+def _validate_agg(node, agg_fn, element_type):
+    if agg_fn == "avg":
+        if element_type in NUMERIC_CATEGORIES or element_type in {
+            "currency",
+            "tonnage",
+            "percent",
+            "complex",
+        }:
+            return
+
+        _fail(node, "avg() over a column requires a numeric, quantity, or complex column.")
+
+    # sum(): currency/tonnage/percent/duration/complex, same as
+    # top-level sum(). min/max: anything orderable (dates, text, ...),
+    # same as top-level min()/max().
+    compatible = _SUMMABLE if agg_fn == "sum" else _ORDERABLE
+
+    if element_type in NUMERIC_CATEGORIES or element_type in compatible:
+        return
+
+    _fail(node, f"{agg_fn}() over a column requires a compatible type.")
+
+
+def _groupby_result(categories, node):
+    _require_table(node, categories[0], "groupby()")
+
+    by_lower = {name.lower(): (name, field_type) for name, field_type in categories[0].fields}
+
+    def literal_str(index, what):
+        arg_node = node.args[index]
+
+        if not isinstance(arg_node, Literal) or not isinstance(arg_node.value, str):
+            _fail(node, f"groupby()'s {what} must be literal text.")
+
+        return arg_node.value
+
+    group_col = literal_str(1, "group column")
+    agg_col = literal_str(2, "aggregate column")
+    agg_fn = literal_str(3, "aggregate function")
+
+    if group_col.lower() not in by_lower:
+        _fail(node, f"groupby(): {group_col!r} is not a column of this table.")
+
+    if agg_fn not in _GROUPBY_AGG_FNS:
+        _fail(node, f"groupby()'s aggregate function must be one of {_GROUPBY_AGG_FNS}.")
+
+    group_name, group_type = by_lower[group_col.lower()]
+
+    if agg_fn == "count":
+        return Type("table", fields=((group_name, group_type), ("count", Type("int"))))
+
+    if agg_col.lower() not in by_lower:
+        _fail(node, f"groupby(): {agg_col!r} is not a column of this table.")
+
+    _, element_type = by_lower[agg_col.lower()]
+    _validate_agg(node, agg_fn, element_type)
+
+    return Type(
+        "table",
+        fields=((group_name, group_type), (f"{agg_fn}_{agg_col}", _agg_result_label(agg_fn, element_type))),
+    )
+
+
+def _groupby_impl(values):
+    table, group_col, agg_col, agg_fn = values
+    names = [name for name, _ in table.schema]
+    group_index = next(i for i, name in enumerate(names) if name.lower() == group_col.lower())
+    group_field = table.schema[group_index]
+
+    groups: dict = {}
+
+    for row_index in range(table.row_count):
+        groups.setdefault(table.columns[group_index][row_index], []).append(row_index)
+
+    if agg_fn == "count":
+        result_field = ("count", Type("int"))
+        agg_values = [len(rows) for rows in groups.values()]
+    else:
+        agg_index = next(i for i, name in enumerate(names) if name.lower() == agg_col.lower())
+        element_type = table.schema[agg_index][1]
+        result_field = (f"{agg_fn}_{agg_col}", _agg_result_label(agg_fn, element_type))
+
+        agg_values = [
+            FUNCTIONS[agg_fn].impl(
+                [
+                    Column(
+                        name=agg_col,
+                        values=tuple(table.columns[agg_index][i] for i in rows),
+                        element_type=element_type,
+                    )
+                ]
+            )
+            for rows in groups.values()
+        ]
+
+    return Table(
+        schema=(group_field, result_field),
+        columns=(tuple(groups.keys()), tuple(agg_values)),
+    )
 
 
 FUNCTIONS = {
@@ -680,6 +1237,9 @@ FUNCTIONS = {
     "isblank": FunctionSpec("isblank", 1, 1, False, _isblank_result, _isblank_impl),
     "coalesce": FunctionSpec("coalesce", 2, 2, False, _coalesce_result, _coalesce_impl),
     "if": FunctionSpec("if", 3, 3, True, _if_result, _if_impl),
+    "and": FunctionSpec("and", 2, None, True, _and_or_result("and"), _and_impl),
+    "or": FunctionSpec("or", 2, None, True, _and_or_result("or"), _or_impl),
+    "not": FunctionSpec("not", 1, 1, False, _not_result, _not_impl),
     "days_between": FunctionSpec(
         "days_between",
         2,
@@ -688,7 +1248,28 @@ FUNCTIONS = {
         _days_between_result,
         lambda values: (values[1] - values[0]).days,
     ),
+    "dayname": FunctionSpec("dayname", 1, 2, False, _dayname_result, _dayname_impl),
+    "startofmonth": _date_bound_spec("startofmonth", start_of_month),
+    "endofmonth": _date_bound_spec("endofmonth", end_of_month),
+    "startofquarter": _date_bound_spec("startofquarter", start_of_quarter),
+    "endofquarter": _date_bound_spec("endofquarter", end_of_quarter),
+    "startofyear": _date_bound_spec("startofyear", start_of_year),
+    "endofyear": _date_bound_spec("endofyear", end_of_year),
     "column": FunctionSpec("column", 2, None, False, _column_result, _column_impl),
     "table": FunctionSpec("table", 1, None, False, _table_result, _table_impl),
     "rowcount": FunctionSpec("rowcount", 1, 1, False, _rowcount_result, _rowcount_impl),
+    "colcount": FunctionSpec("colcount", 1, 1, False, _colcount_result, _colcount_impl),
+    "array": FunctionSpec("array", 1, None, False, _array_result, _array_impl),
+    "matrix": FunctionSpec("matrix", 1, None, False, _matrix_result, _matrix_impl),
+    "length": FunctionSpec("length", 1, 1, False, _length_result, _length_impl),
+    "at": FunctionSpec("at", 2, 3, False, _at_result, _at_impl),
+    "filter": FunctionSpec(
+        "filter", 2, 2, True, _filter_result, _filter_impl, row_scope_arg=1
+    ),
+    "select": FunctionSpec("select", 2, None, False, _select_result, _select_impl),
+    "extend": FunctionSpec(
+        "extend", 3, 3, True, _extend_result, _extend_impl, row_scope_arg=2
+    ),
+    "sort": FunctionSpec("sort", 2, 3, True, _sort_result, _sort_impl, row_scope_arg=1),
+    "groupby": FunctionSpec("groupby", 4, 4, False, _groupby_result, _groupby_impl),
 }

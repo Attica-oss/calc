@@ -12,7 +12,17 @@ from typing import Any
 from .casts import CAST_RULES
 from .functions import FUNCTIONS
 from .operators import BINARY_RULES, UNARY_RULES
-from .parser import BinOp, Call, Cast, Literal, UnaryOp, Var, parse, variables_in
+from .parser import (
+    BinOp,
+    Call,
+    Cast,
+    Literal,
+    RowRef,
+    UnaryOp,
+    Var,
+    parse,
+    variables_in,
+)
 from .values import Column, ExpressionError, Table, Type, category_of, label
 
 
@@ -34,8 +44,17 @@ def _arity_text(spec) -> str:
     return f"between {spec.min_args} and {spec.max_args} arguments"
 
 
-def check_types(node, variable_types: dict, functions: dict) -> str:
-    """Return the expression's category or raise, without evaluating."""
+def check_types(node, variable_types: dict, functions: dict, row_scope: dict | None = None) -> str:
+    """Return the expression's category or raise, without evaluating.
+
+    row_scope, when set, is the current table verb's row scope — a
+    dict of lowercased column name -> Type, used only to resolve
+    RowRef ([colname]) nodes. It propagates unchanged through every
+    ordinary recursive call, so [colname] still resolves correctly
+    nested arbitrarily deep inside a row expression; only the Call
+    branch below ever replaces it, and only for the one argument a
+    row-scoped FunctionSpec (filter/extend/sort) designates.
+    """
 
     if isinstance(node, Literal):
         return category_of(node.value)
@@ -49,8 +68,26 @@ def check_types(node, variable_types: dict, functions: dict) -> str:
 
         return variable_types[node.name]
 
+    if isinstance(node, RowRef):
+        if row_scope is None:
+            raise ExpressionError(
+                f"[{node.name}] can only be used inside filter()/extend()/"
+                "sort()'s row expression.",
+                node.position,
+            )
+
+        key = node.name.lower()
+
+        if key not in row_scope:
+            raise ExpressionError(
+                f"Unknown column {node.name!r} in this row scope.",
+                node.position,
+            )
+
+        return row_scope[key]
+
     if isinstance(node, UnaryOp):
-        operand = check_types(node.operand, variable_types, functions)
+        operand = check_types(node.operand, variable_types, functions, row_scope)
         rule = UNARY_RULES.get((node.op, operand))
 
         if rule is None:
@@ -62,8 +99,8 @@ def check_types(node, variable_types: dict, functions: dict) -> str:
         return rule[0]
 
     if isinstance(node, BinOp):
-        left = check_types(node.left, variable_types, functions)
-        right = check_types(node.right, variable_types, functions)
+        left = check_types(node.left, variable_types, functions, row_scope)
+        right = check_types(node.right, variable_types, functions, row_scope)
         rule = BINARY_RULES.get((node.op, left, right))
 
         if rule is None:
@@ -94,14 +131,51 @@ def check_types(node, variable_types: dict, functions: dict) -> str:
                 node.position,
             )
 
-        categories = [
-            check_types(argument, variable_types, functions) for argument in node.args
-        ]
+        if spec.row_scope_arg is None:
+            categories = [
+                check_types(argument, variable_types, functions, row_scope)
+                for argument in node.args
+            ]
+        else:
+            # A row-scoped verb (filter/extend/sort): every argument
+            # checks under the *ambient* row_scope as usual, except
+            # the one designated argument, which checks under a new
+            # row scope derived from the table argument's own schema
+            # (always argument 0, already checked by the time we
+            # reach the designated index since args are processed in
+            # order).
+            categories = []
+
+            for index, argument in enumerate(node.args):
+                if index != spec.row_scope_arg:
+                    categories.append(
+                        check_types(argument, variable_types, functions, row_scope)
+                    )
+                    continue
+
+                table_category = categories[0]
+
+                if not (
+                    isinstance(table_category, Type)
+                    and table_category.fields
+                    and str.__eq__(table_category, "table")
+                ):
+                    raise ExpressionError(
+                        f"{spec.name}()'s first argument must be a table.",
+                        node.position,
+                    )
+
+                inner_scope = {
+                    name.lower(): field_type for name, field_type in table_category.fields
+                }
+                categories.append(
+                    check_types(argument, variable_types, functions, inner_scope)
+                )
 
         return spec.result_type(categories, node)
 
     if isinstance(node, Cast):
-        source = check_types(node.value, variable_types, functions)
+        source = check_types(node.value, variable_types, functions, row_scope)
 
         # Table field access (t::colname) isn't a fixed-vocabulary cast
         # — the "target" is one of the table's own column names, known
@@ -132,7 +206,7 @@ def check_types(node, variable_types: dict, functions: dict) -> str:
     raise ExpressionError("Unsupported expression node.")
 
 
-def evaluate_node(node, environment: Environment):
+def evaluate_node(node, environment: Environment, row_scope: dict | None = None):
     try:
         if isinstance(node, Literal):
             return node.value
@@ -141,15 +215,19 @@ def evaluate_node(node, environment: Environment):
             # The checker already verified the name exists.
             return environment.variables[node.name]
 
+        if isinstance(node, RowRef):
+            # The checker already verified this resolves.
+            return row_scope[node.name.lower()]
+
         if isinstance(node, UnaryOp):
-            operand = evaluate_node(node.operand, environment)
+            operand = evaluate_node(node.operand, environment, row_scope)
             category = category_of(operand)
             _, impl = UNARY_RULES[(node.op, category)]
             return impl(operand)
 
         if isinstance(node, BinOp):
-            left = evaluate_node(node.left, environment)
-            right = evaluate_node(node.right, environment)
+            left = evaluate_node(node.left, environment, row_scope)
+            right = evaluate_node(node.right, environment, row_scope)
             key = (node.op, category_of(left), category_of(right))
             _, impl = BINARY_RULES[key]
             return impl(left, right)
@@ -158,14 +236,16 @@ def evaluate_node(node, environment: Environment):
             spec = environment.functions[node.name]
 
             if spec.lazy:
-                return spec.impl(node.args, environment, evaluate_node)
+                return spec.impl(node.args, environment, evaluate_node, row_scope)
 
-            values = [evaluate_node(argument, environment) for argument in node.args]
+            values = [
+                evaluate_node(argument, environment, row_scope) for argument in node.args
+            ]
 
             return spec.impl(values)
 
         if isinstance(node, Cast):
-            value = evaluate_node(node.value, environment)
+            value = evaluate_node(node.value, environment, row_scope)
 
             if isinstance(value, Table):
                 names = [name.lower() for name, _ in value.schema]

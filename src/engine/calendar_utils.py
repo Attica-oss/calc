@@ -106,3 +106,39 @@ def timedelta_to_duration(value: timedelta) -> Duration:
 
 def time_to_seconds(value: time) -> int:
     return value.hour * 3600 + value.minute * 60 + value.second
+
+
+# ---- Time-intelligence date boundaries -----------------------------
+#
+# Pure date -> date building blocks (DAX's vocabulary — STARTOFMONTH,
+# ENDOFMONTH, ... — reimplemented as ordinary explicit functions, no
+# implicit filter context). A DAX-style year-to-date total is just
+# sum(filter(t, [date] >= start_of_year(asof) and [date] <= asof)::amount)
+# composed from these plus the table verbs, not a separate mechanism.
+
+
+def start_of_month(value: date) -> date:
+    return value.replace(day=1)
+
+
+def end_of_month(value: date) -> date:
+    return value.replace(day=calendar.monthrange(value.year, value.month)[1])
+
+
+def start_of_quarter(value: date) -> date:
+    quarter_start_month = 3 * ((value.month - 1) // 3) + 1
+    return value.replace(month=quarter_start_month, day=1)
+
+
+def end_of_quarter(value: date) -> date:
+    quarter_start_month = 3 * ((value.month - 1) // 3) + 1
+    end_month = quarter_start_month + 2
+    return date(value.year, end_month, calendar.monthrange(value.year, end_month)[1])
+
+
+def start_of_year(value: date) -> date:
+    return value.replace(month=1, day=1)
+
+
+def end_of_year(value: date) -> date:
+    return value.replace(month=12, day=31)

@@ -13,7 +13,7 @@ from datetime import date, datetime, time
 from decimal import ROUND_DOWN, Decimal, InvalidOperation
 
 from .formatting import format_result
-from .values import ExpressionError, Quantity, Unit, to_decimal
+from .values import Char, ExpressionError, Quantity, Unit, to_decimal
 
 CAST_RULES: dict = {}
 
@@ -119,6 +119,7 @@ for _category in (
     "percent",
     "complex",
     "blank",
+    "char",
 ):
     register_cast(_category, "text", "text", format_result)
 
@@ -190,3 +191,34 @@ def _text_to_time(text: str) -> time:
 register_cast("text", "date", "date", _text_to_date)
 register_cast("text", "datetime", "datetime", _text_to_datetime)
 register_cast("text", "time", "time", _text_to_time)
+
+# ---- Char conversions ------------------------------------------------
+#
+# char::text is covered by the generic to-text loop above (it just
+# renders the character itself). The rest go through int, the same way
+# currency/tonnage/percent already round-trip through decimal instead
+# of each pair inventing its own conversion.
+
+register_cast("char", "int", "int", lambda v: v.codepoint)
+
+
+def _int_to_char(codepoint: int) -> Char:
+    if not (0 <= codepoint <= 0x10FFFF) or 0xD800 <= codepoint <= 0xDFFF:
+        raise ExpressionError(f"{codepoint} is not a valid Unicode codepoint.")
+
+    return Char(codepoint)
+
+
+register_cast("int", "char", "char", _int_to_char)
+
+
+def _text_to_char(text: str) -> Char:
+    if len(text) != 1:
+        raise ExpressionError(
+            f"{text!r} is not a single character (has {len(text)})."
+        )
+
+    return Char(ord(text))
+
+
+register_cast("text", "char", "char", _text_to_char)

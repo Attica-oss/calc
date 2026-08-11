@@ -69,6 +69,10 @@ TOKEN_RE = re.compile(
         "
     )
     |
+    (?P<HEX_CHAR>
+        0[xX][0-9A-Fa-f]+
+    )
+    |
     (?P<NUMBER>
         (?:\d+(?:\.\d*)?|\.\d+)
         (?:[eE][+-]?\d+)?
@@ -105,6 +109,10 @@ TOKEN_RE = re.compile(
     (?P<LPAREN>\()
     |
     (?P<RPAREN>\))
+    |
+    (?P<LBRACKET>\[)
+    |
+    (?P<RBRACKET>\])
     |
     (?P<COMMA>,)
     |

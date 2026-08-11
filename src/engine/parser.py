@@ -11,7 +11,7 @@ from datetime import date, datetime, time
 from decimal import Decimal
 
 from .lexer import tokenize
-from .values import INFINITY, Complex, Duration, ExpressionError, Quantity, Unit
+from .values import INFINITY, Char, Complex, Duration, ExpressionError, Quantity, Unit
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,22 @@ class Literal:
 
 @dataclass(frozen=True)
 class Var:
+    name: str
+    position: int
+
+
+@dataclass(frozen=True)
+class RowRef:
+    """[name] — a reference to the current row's column value inside a
+    table verb's row expression (filter/extend/sort). Deliberately its
+    own node type, distinct from Var: ROADMAP.md calls for "lexical
+    [column] row scope — no DAX-style implicit context, ever", so a
+    row-scope column and a same-named outer variable never collide —
+    see the row_scope threading in evaluator.py. Valid only inside a
+    row_scope_arg-designated argument; check_types raises a clear
+    error anywhere else.
+    """
+
     name: str
     position: int
 
@@ -386,6 +402,19 @@ class Parser:
 
             return Literal(value=INFINITY, position=token.position)
 
+        if token.kind == "HEX_CHAR":
+            self.advance()
+
+            codepoint = int(token.value, base=0)
+
+            if codepoint > 0x10FFFF or 0xD800 <= codepoint <= 0xDFFF:
+                raise ExpressionError(
+                    f"{token.value!r} is not a valid Unicode codepoint.",
+                    token.position,
+                )
+
+            return Literal(value=Char(codepoint), position=token.position)
+
         if token.kind == "STRING":
             self.advance()
 
@@ -451,6 +480,13 @@ class Parser:
             # case-sensitive; function names are lowercased.
             return Var(name=token.value, position=token.position)
 
+        if token.kind == "LBRACKET":
+            self.advance()
+            name_token = self.expect("IDENTIFIER", "a column name inside '[...]'")
+            self.expect("RBRACKET", "']'")
+
+            return RowRef(name=name_token.value, position=token.position)
+
         if token.kind == "LPAREN":
             self.advance()
             self.depth += 1
@@ -470,7 +506,8 @@ class Parser:
             return value
 
         raise ExpressionError(
-            "Expected a number, date, duration, string, variable, function, or '('.",
+            "Expected a number, date, duration, string, variable, function, "
+            "'[column]', or '('.",
             token.position,
         )
 

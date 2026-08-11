@@ -17,11 +17,14 @@ from typing import Any
 import pytest
 
 from src.engine import (
+    Array,
     Blank,
+    Char,
     Column,
     Complex,
     Duration,
     ExpressionError,
+    Matrix,
     Quantity,
     Table,
     Type,
@@ -661,6 +664,426 @@ def test_aggregate_functions_over_an_int_column_stay_int():
 
 def test_rowcount_requires_a_table():
     assert_expression_error("rowcount(5)", "rowcount() requires a table")
+
+
+# Table verbs: filter / select / extend / sort / groupby
+
+
+def _catch_report():
+    return evaluate_expression(
+        'table(column("vessel", "Njord", "Njord", "Selkie"), '
+        'column("qty", 3.4t, 1.2t, 2.1t), '
+        'column("price", $450, $380, $455))'
+    ).value
+
+
+def test_row_ref_outside_any_verb_is_an_error():
+    assert_expression_error(
+        "[qty] > 1", "can only be used inside filter()/extend()/sort()"
+    )
+
+
+def test_row_ref_unknown_column_is_an_error():
+    assert_expression_error(
+        "filter(t, [bogus] > 1t)", "Unknown column 'bogus'", {"t": _catch_report()}
+    )
+
+
+def test_row_ref_never_collides_with_a_same_named_outer_variable():
+    # ROADMAP.md: "lexical [column] row scope — no DAX-style implicit
+    # context, ever." [qty] must resolve to the row's value; the bare
+    # `qty` in the same expression must still resolve to the outer
+    # variable, not the row.
+    t = _catch_report()
+    outer_qty = Quantity(Decimal("2.5"), Unit.TONNAGE)
+    result = evaluate_expression(
+        "filter(t, [qty] > qty)", {"t": t, "qty": outer_qty}
+    ).value
+    assert result.columns[0] == ("Njord",)  # only the 3.4t row beats 2.5t
+
+
+def test_filter():
+    t = _catch_report()
+    result = evaluate_expression("filter(t, [qty] > 2t)", {"t": t}).value
+    assert result.columns[0] == ("Njord", "Selkie")
+    assert result.schema == t.schema
+
+
+@pytest.mark.parametrize(
+    ("expression", "fragment"),
+    [
+        ("filter(t, [qty])", "must be a boolean"),
+        ("filter(5, [qty] > 1t)", "first argument must be a table"),
+    ],
+)
+def test_filter_type_errors(expression, fragment):
+    assert_expression_error(expression, fragment, {"t": _catch_report()})
+
+
+def test_select_reorders_and_subsets():
+    t = _catch_report()
+    result = evaluate_expression('select(t, "price", "vessel")', {"t": t}).value
+    assert [name for name, _ in result.schema] == ["price", "vessel"]
+    assert result.columns[1] == t.columns[0]
+
+
+@pytest.mark.parametrize(
+    ("expression", "fragment"),
+    [
+        ('select(t, "nope")', "is not a column"),
+        ('select(t, "qty", "qty")', "duplicate column name"),
+    ],
+)
+def test_select_type_errors(expression, fragment):
+    assert_expression_error(expression, fragment, {"t": _catch_report()})
+
+
+def test_extend_adds_a_computed_column():
+    t = _catch_report()
+    result = evaluate_expression(
+        'extend(t, "value", [qty] * [price])', {"t": t}
+    ).value
+    assert [name for name, _ in result.schema][-1] == "value"
+    assert result.columns[-1] == (
+        Quantity(Decimal("1530.00"), Unit.CURRENCY),
+        Quantity(Decimal("456.00"), Unit.CURRENCY),
+        Quantity(Decimal("955.50"), Unit.CURRENCY),
+    )
+
+
+@pytest.mark.parametrize(
+    ("expression", "fragment"),
+    [
+        ('extend(t, "qty", [qty])', "already exists"),
+        ("extend(t, name, [qty])", "literal text column name"),
+    ],
+)
+def test_extend_type_errors(expression, fragment):
+    assert_expression_error(expression, fragment, {"t": _catch_report(), "name": "x"})
+
+
+def test_extend_on_an_empty_table_is_a_runtime_error():
+    empty = evaluate_expression(
+        "filter(t, [qty] > 100t)", {"t": _catch_report()}
+    ).value
+    assert empty.row_count == 0
+    assert_expression_error(
+        'extend(t, "value", [qty] * 2)',
+        "cannot determine a new column's type on an empty table",
+        {"t": empty},
+    )
+
+
+def test_sort_ascending_and_descending():
+    t = _catch_report()
+    ascending = evaluate_expression("sort(t, [qty])", {"t": t}).value
+    assert ascending.columns[0] == ("Njord", "Selkie", "Njord")
+
+    descending = evaluate_expression('sort(t, [qty], "DESC")', {"t": t}).value
+    assert descending.columns[0] == ("Njord", "Selkie", "Njord")
+    assert descending.columns[1][0] == Quantity(Decimal("3.4"), Unit.TONNAGE)
+
+
+@pytest.mark.parametrize(
+    ("expression", "fragment"),
+    [
+        ('sort(t, [qty], "sideways")', 'must be "asc" or "desc"'),
+    ],
+)
+def test_sort_type_errors(expression, fragment):
+    assert_expression_error(expression, fragment, {"t": _catch_report()})
+
+
+def test_groupby_sum_avg_min_max_count():
+    t = _catch_report()
+    variables = {"t": t}
+
+    summed = evaluate_expression('groupby(t, "vessel", "qty", "sum")', variables).value
+    assert dict(zip(summed.columns[0], summed.columns[1])) == {
+        "Njord": Quantity(Decimal("4.600"), Unit.TONNAGE),
+        "Selkie": Quantity(Decimal("2.100"), Unit.TONNAGE),
+    }
+
+    counted = evaluate_expression(
+        'groupby(t, "vessel", "qty", "count")', variables
+    ).value
+    assert dict(zip(counted.columns[0], counted.columns[1])) == {
+        "Njord": 2,
+        "Selkie": 1,
+    }
+
+
+def test_groupby_reuses_the_real_column_aggregation_path():
+    # groupby()'s aggregate is FUNCTIONS[agg_fn].impl on a real Column
+    # built via column() — the same path sum(t::qty) already exercises
+    # — so an int column's sum stays "int", matching sum(t::col).
+    t = evaluate_expression(
+        'table(column("g", "a", "a", "b"), column("n", 1, 2, 3))'
+    ).value
+    result = evaluate_expression(
+        'groupby(t, "g", "n", "sum")', {"t": t}
+    )
+    assert result.category == Type(
+        "table", fields=(("g", Type("text")), ("sum_n", Type("int")))
+    )
+
+
+@pytest.mark.parametrize(
+    ("expression", "fragment"),
+    [
+        ('groupby(t, "vessel", "vessel", "sum")', "requires a compatible type"),
+        ('groupby(t, "vessel", "qty", "median")', "must be one of"),
+        ('groupby(t, "nope", "qty", "sum")', "is not a column"),
+    ],
+)
+def test_groupby_type_errors(expression, fragment):
+    assert_expression_error(expression, fragment, {"t": _catch_report()})
+
+
+def test_min_max_now_work_on_text():
+    # Regression check for the _ORDERABLE fix made alongside sort():
+    # text has had full </<=/>/>= support since the text type landed,
+    # but min()/max() didn't know it until this fix.
+    assert_eval('min("b", "a", "c")', "a", "text")
+    assert_eval('max("b", "a", "c")', "c", "text")
+
+
+def test_verbs_compose():
+    # Njord/1.2t is filtered out; the remaining two rows are extended,
+    # sorted by the new column descending, then reduced to two columns
+    # — filter -> extend -> sort -> select chained through one expression.
+    t = _catch_report()
+    result = evaluate_expression(
+        'select('
+        '  sort('
+        '    extend(filter(t, [qty] > 1.5t), "value", [qty] * [price]),'
+        '    [value], "desc"'
+        "  ),"
+        '  "vessel", "value"'
+        ")",
+        {"t": t},
+    ).value
+    assert [name for name, _ in result.schema] == ["vessel", "value"]
+    assert result.columns[0] == ("Njord", "Selkie")
+    assert result.columns[1] == (
+        Quantity(Decimal("1530.00"), Unit.CURRENCY),
+        Quantity(Decimal("955.50"), Unit.CURRENCY),
+    )
+
+
+# Char
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected_value", "expected_category"),
+    [
+        ("0x2B", Char(0x2B), "char"),
+        ("0X2b", Char(0x2B), "char"),
+        ("0x2B < 0x2C", True, "boolean"),
+        ("0x2B = 0x2B", True, "boolean"),
+        ("0x2B::TEXT", "+", "text"),
+        ("0x2B::INT", 43, "int"),
+        ("43::CHAR", Char(0x2B), "char"),
+        ('"+"::CHAR', Char(0x2B), "char"),
+    ],
+)
+def test_char_expressions(expression, expected_value, expected_category):
+    assert_eval(expression, expected_value, expected_category)
+
+
+@pytest.mark.parametrize(
+    ("expression", "fragment"),
+    [
+        ("0x110000", "not a valid Unicode codepoint"),
+        ("0xD800", "not a valid Unicode codepoint"),
+        ('"ab"::CHAR', "not a single character"),
+        ("0x2B + 0x2C", "not defined"),
+        ("1114112::CHAR", "not a valid Unicode codepoint"),
+    ],
+)
+def test_char_type_errors(expression, fragment):
+    assert_expression_error(expression, fragment)
+
+
+def test_char_formatting():
+    assert format_result(Char(0x2B)) == "+"
+
+
+# Array and Matrix
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected_value", "expected_category"),
+    [
+        (
+            "array(1, 2, 3)",
+            Array(values=(1, 2, 3), element_type=Type("int")),
+            Type("array", fields=((None, Type("int")),)),
+        ),
+        ("length(array(1, 2, 3))", 3, "int"),
+        ("at(array(10, 20, 30), 2)", 20, "int"),
+        ("sum(array(1t, 2t, 3t))", Quantity(Decimal(6), Unit.TONNAGE), "tonnage"),
+        ("avg(array(1, 2, 3))", Decimal(2), "decimal"),
+        ('min(array("b", "a", "c"))', "a", "text"),
+        ('max(array("b", "a", "c"))', "c", "text"),
+    ],
+)
+def test_array_expressions(expression, expected_value, expected_category):
+    assert_eval(expression, expected_value, expected_category)
+
+
+@pytest.mark.parametrize(
+    ("expression", "fragment"),
+    [
+        ("array(1, $2)", "same type"),
+        ("at(array(1, 2, 3), 0)", "out of range"),
+        ("at(array(1, 2, 3), 4)", "out of range"),
+        ("length(5)", "requires an array"),
+    ],
+)
+def test_array_type_errors(expression, fragment):
+    assert_expression_error(expression, fragment)
+
+
+def test_matrix_construction_and_access():
+    result = evaluate_expression("matrix(array(1, 2, 3), array(4, 5, 6))")
+    assert result.category == Type("matrix", fields=((None, Type("int")),))
+    matrix = result.value
+    assert isinstance(matrix, Matrix)
+    assert matrix.shape == (2, 3)
+    assert matrix.rows == ((1, 2, 3), (4, 5, 6))
+
+    assert evaluate_expression(
+        "at(matrix(array(1, 2), array(3, 4)), 2, 1)"
+    ).value == 3
+    assert evaluate_expression(
+        "rowcount(matrix(array(1, 2), array(3, 4)))"
+    ).value == 2
+    assert evaluate_expression(
+        "colcount(matrix(array(1, 2), array(3, 4)))"
+    ).value == 2
+
+
+@pytest.mark.parametrize(
+    ("expression", "fragment"),
+    [
+        ("matrix(array(1, 2), array(3, 4, 5))", "same number of elements"),
+        ('matrix(array(1, 2), array("a", "b"))', "same element type"),
+        ("matrix(array(1, 2), 5)", "must all be array()"),
+        ("at(matrix(array(1, 2), array(3, 4)), 3, 1)", "out of range"),
+    ],
+)
+def test_matrix_type_errors(expression, fragment):
+    assert_expression_error(expression, fragment)
+
+
+def test_array_and_matrix_formatting():
+    assert format_result(evaluate_expression("array(1, 2, 3)").value) == "[1, 2, 3]"
+    assert (
+        format_result(evaluate_expression("matrix(array(1, 2), array(3, 4))").value)
+        == "1 | 2\n3 | 4"
+    )
+
+
+def test_rowcount_and_colcount_still_work_on_a_table():
+    t = evaluate_expression('table(column("a", 1, 2), column("b", 3, 4))').value
+    assert evaluate_expression("rowcount(t)", {"t": t}).value == 2
+    assert evaluate_expression("colcount(t)", {"t": t}).value == 2
+
+
+# and / or / not
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected_value"),
+    [
+        ("and(1 = 1, 2 = 2)", True),
+        ("and(1 = 1, 2 = 3)", False),
+        ("and(1 = 1, 1 = 1, 1 = 2)", False),
+        ("or(1 = 2, 2 = 3)", False),
+        ("or(1 = 2, 2 = 2)", True),
+        ("not(1 = 1)", False),
+        ("not(1 = 2)", True),
+    ],
+)
+def test_and_or_not(expression, expected_value):
+    assert_eval(expression, expected_value, "boolean")
+
+
+def test_and_or_short_circuit_avoids_the_error():
+    # and()/or() are lazy for the same reason if() is: an unreached
+    # argument must never be evaluated, or and(x <> 0, 1/x > 5) would
+    # divide by zero whenever x = 0 despite the whole thing being
+    # trivially False.
+    assert_eval("and(x <> 0, 1 / x > 5)", False, "boolean", {"x": 0})
+    assert_eval("or(x = 0, 1 / x > 5)", True, "boolean", {"x": 0})
+
+
+@pytest.mark.parametrize(
+    ("expression", "fragment"),
+    [
+        ("and(1, 2)", "must all be boolean"),
+        ("or(1 = 1, 2)", "must all be boolean"),
+        ("not(5)", "requires a boolean"),
+    ],
+)
+def test_and_or_not_type_errors(expression, fragment):
+    assert_expression_error(expression, fragment)
+
+
+# dayname and time-intelligence date functions
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected_value"),
+    [
+        ("dayname(2026-08-08)", "Sat"),
+        ('dayname(2026-08-08, "%a")', "Sat"),
+        ('dayname(2026-08-08, "%A")', "Saturday"),
+    ],
+)
+def test_dayname(expression, expected_value):
+    assert_eval(expression, expected_value, "text")
+
+
+def test_dayname_type_errors():
+    assert_expression_error('dayname(2026-08-08, "%Q")', 'must be "%a" or "%A"')
+    assert_expression_error("dayname(5)", "requires a date or datetime")
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected_value", "expected_category"),
+    [
+        ("startofmonth(2026-08-08)", date(2026, 8, 1), "date"),
+        ("endofmonth(2026-08-08)", date(2026, 8, 31), "date"),
+        ("endofmonth(2024-02-15)", date(2024, 2, 29), "date"),  # leap year
+        ("startofquarter(2026-08-08)", date(2026, 7, 1), "date"),
+        ("endofquarter(2026-08-08)", date(2026, 9, 30), "date"),
+        ("startofyear(2026-08-08)", date(2026, 1, 1), "date"),
+        ("endofyear(2026-08-08)", date(2026, 12, 31), "date"),
+        (
+            "startofmonth(2026-08-08T14:30:00)",
+            datetime(2026, 8, 1),
+            "datetime",
+        ),
+    ],
+)
+def test_time_intelligence_date_bounds(expression, expected_value, expected_category):
+    assert_eval(expression, expected_value, expected_category)
+
+
+def test_time_intelligence_composes_into_a_ytd_total():
+    t = evaluate_expression(
+        'table(column("date", 2026-01-05, 2026-03-10, 2026-07-01, 2025-12-20), '
+        'column("amount", $100, $200, $300, $400))'
+    ).value
+    asof = date(2026, 8, 8)
+
+    result = evaluate_expression(
+        "sum(filter(t, and([date] >= startofyear(asof), [date] <= asof))::amount)",
+        {"t": t, "asof": asof},
+    )
+    assert result.value == Quantity(Decimal(600), Unit.CURRENCY)
 
 
 # Type object semantics

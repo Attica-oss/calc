@@ -35,10 +35,11 @@ class FunctionSpec:
     name: str
     min_args: int
     max_args: int | None       # None means unbounded (sum, avg, min, max)
-    lazy: bool                  # True only for if() — see below
+    lazy: bool                  # True for if() and the row-scoped table verbs
     result_type: Callable       # (categories, node) -> category, or raises
     impl: Callable               # eager: (values) -> value
-                                    # lazy:  (arg_nodes, environment, evaluate) -> value
+                                    # lazy:  (arg_nodes, environment, evaluate, row_scope) -> value
+    row_scope_arg: int | None = None  # see "Row-scoped functions" below
 ```
 
 `result_type` runs during type-checking, before anything is evaluated —
@@ -104,14 +105,16 @@ FUNCTIONS = {
 
 ### Lazy functions
 
-`if()` is the only lazy function today, and it's the reason `impl`
-functions get an `evaluate` callback at all:
+`if()` is the reason `impl` functions get an `evaluate` callback at
+all, and the reason it takes a `row_scope` argument too (threaded
+through unchanged unless the function is itself row-scoped — see
+below):
 
 ```python
-def _if_impl(args, environment, evaluate):
-    condition = evaluate(args[0], environment)
+def _if_impl(args, environment, evaluate, row_scope):
+    condition = evaluate(args[0], environment, row_scope)
     chosen = args[1] if condition else args[2]
-    return evaluate(chosen, environment)
+    return evaluate(chosen, environment, row_scope)
 ```
 
 Make a function lazy only when evaluating an argument unconditionally
@@ -121,6 +124,22 @@ and the default for everything else, including `coalesce()`, which
 looks like it should be lazy but isn't: this language has no side
 effects, so evaluating the branch you don't end up using costs nothing
 and never causes an error).
+
+### Row-scoped functions
+
+`filter`/`extend`/`sort` (the table verbs with a *row expression*
+argument, e.g. `filter(t, [qty] > 2t)`) are both lazy and
+`row_scope_arg`-flagged. `row_scope_arg` names the one argument
+(always index ≥ 1, with the table itself at index 0) that gets
+type-checked under a *replaced* scope — built from the table
+argument's own schema — instead of the ambient one; see the
+`row_scope`-aware branch in `check_types`'s `Call` handling
+(`evaluator.py`) for exactly how, and `_filter_result`/`_filter_impl`
+in `functions.py` for the simplest complete example. `select`/`groupby`
+don't need any of this — their arguments are compile-time string
+literals, checked the same way `column()`'s name argument already is
+(`result_type` reading `node.args[i]` directly), so they stay ordinary
+eager functions.
 
 ### The one function with no type restriction
 

@@ -488,6 +488,7 @@ for _category in (
     "tonnage",
     "percent",
     "text",
+    "char",
 ):
     for _op, _impl in _COMPARATORS.items():
         register_binary(_op, _category, _category, "boolean", _impl)

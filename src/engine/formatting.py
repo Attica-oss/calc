@@ -3,10 +3,13 @@
 from decimal import Decimal
 
 from .values import (
+    Array,
     Blank,
+    Char,
     Column,
     Complex,
     Duration,
+    Matrix,
     Quantity,
     Table,
     Unit,
@@ -118,6 +121,20 @@ def format_column(value: Column) -> str:
     return f"{value.name}: [{', '.join(format_result(v) for v in value.values)}]"
 
 
+def format_array(value: Array) -> str:
+    return f"[{', '.join(format_result(v) for v in value.values)}]"
+
+
+def format_matrix(value: Matrix) -> str:
+    if not value.rows:
+        return "(empty matrix)"
+
+    rows = [[format_result(cell) for cell in row] for row in value.rows]
+    width = max(len(cell) for row in rows for cell in row)
+
+    return "\n".join(" | ".join(cell.rjust(width) for cell in row) for row in rows)
+
+
 def format_result(value) -> str:
     # bool is a subclass of int: check it first.
     if isinstance(value, bool):
@@ -129,6 +146,9 @@ def format_result(value) -> str:
     if isinstance(value, str):
         return value
 
+    if isinstance(value, Char):
+        return chr(value.codepoint)
+
     if isinstance(value, Complex):
         return format_complex(value)
 
@@ -137,6 +157,12 @@ def format_result(value) -> str:
 
     if isinstance(value, Table):
         return format_table(value)
+
+    if isinstance(value, Array):
+        return format_array(value)
+
+    if isinstance(value, Matrix):
+        return format_matrix(value)
 
     if isinstance(value, Quantity):
         if value.unit is Unit.CURRENCY:
