@@ -198,7 +198,9 @@ def bind_variables(definitions: list[str]) -> dict:
         name = name.strip()
 
         if not separator or not expression.strip():
-            raise typer.BadParameter(f"--var expects NAME=EXPRESSION, got {definition!r}")
+            raise typer.BadParameter(
+                f"--var expects NAME=EXPRESSION, got {definition!r}"
+            )
 
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
             raise typer.BadParameter(f"{name!r} is not a valid variable name")
@@ -258,7 +260,7 @@ def run_repl(variables: dict) -> int:
         if not line:
             continue
 
-        if line in {"exit", "quit"}:
+        if line in {"exit", "quit","q"}:
             return 0
 
         if line == "help":
@@ -276,7 +278,9 @@ def run_repl(variables: dict) -> int:
 
         if line == "vars":
             if not variables:
-                console.print("(no variables bound — use: let NAME = EXPR)", style="calc.info")
+                console.print(
+                    "(no variables bound — use: let NAME = EXPR)", style="calc.info"
+                )
             for name, value in sorted(variables.items()):
                 console.print(
                     f"  [calc.variable]{name}[/calc.variable] = "
@@ -361,7 +365,9 @@ def main(
     ] = None,
     bare: Annotated[
         bool,
-        typer.Option("--bare", help="print only the formatted value (no type), for scripting"),
+        typer.Option(
+            "--bare", help="print only the formatted value (no type), for scripting"
+        ),
     ] = False,
 ) -> None:
     variables = bind_variables(var or [])
