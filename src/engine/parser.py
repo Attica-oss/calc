@@ -11,17 +11,32 @@ from datetime import date, datetime, time
 from decimal import Decimal
 
 from .lexer import tokenize
-from .values import INFINITY, Char, Complex, Duration, ExpressionError, Quantity, Unit
+from .values import (
+    INFINITY,
+    Char,
+    Complex,
+    Duration,
+    ExpressionError,
+    Quantity,
+    Unit,
+    Value,
+)
 
 
 @dataclass(frozen=True)
 class Literal:
-    value: object
+    """A literal value baked directly into the AST at parse time (a
+    number, string, date, duration, ...). See parse_primary().
+    """
+
+    value: Value
     position: int
 
 
 @dataclass(frozen=True)
 class Var:
+    """A reference to a bound variable, resolved against Environment.variables."""
+
     name: str
     position: int
 
@@ -44,23 +59,31 @@ class RowRef:
 
 @dataclass(frozen=True)
 class UnaryOp:
+    """A prefix +/- applied to a single operand, e.g. -qty."""
+
     op: str
-    operand: object
+    operand: Node
     position: int
 
 
 @dataclass(frozen=True)
 class BinOp:
+    """A binary operator applied to two operands, e.g. price * qty."""
+
     op: str
-    left: object
-    right: object
+    left: Node
+    right: Node
     position: int
 
 
 @dataclass(frozen=True)
 class Call:
+    """A function call, e.g. sum(t::qty). name is already lowercased —
+    function names, unlike variable names, are case-insensitive.
+    """
+
     name: str
-    args: tuple
+    args: tuple[Node, ...]
     position: int
 
 
@@ -74,7 +97,7 @@ class Cast:
     operand. See CAST_RULES (casts.py) for what's registered.
     """
 
-    value: object
+    value: Node
     target: str
     position: int
 
@@ -152,8 +175,7 @@ def parse_duration_literal(text: str, position: int) -> Duration:
 
     if not amount.is_integer():
         raise ExpressionError(
-            "Durations must currently use whole numbers, such as "
-            "30min, 2h, 3d, 4mo, or 1y.",
+            "Durations must currently use whole numbers, such as 30min, 2h, 3d, 4mo, or 1y.",
             position,
         )
 
@@ -173,6 +195,16 @@ def parse_duration_literal(text: str, position: int) -> Duration:
 
 
 class Parser:
+    """Recursive-descent parser with one method per precedence level,
+    each falling through to the next tighter-binding level below it:
+
+        comparison -> addition -> multiplication -> unary -> power
+        -> cast -> primary
+
+    primary() is the leaf: literals, variables, calls, `[column]`
+    row references, and parenthesized subexpressions.
+    """
+
     def __init__(self, expression: str):
         self.expression = expression
         self.tokens = tokenize(expression)
@@ -181,20 +213,28 @@ class Parser:
 
     @property
     def current(self):
+        """The token at the current read position, not yet consumed."""
+
         return self.tokens[self.index]
 
     def advance(self):
+        """Consume and return the current token."""
+
         token = self.current
         self.index += 1
         return token
 
     def accept(self, kind: str):
+        """Consume and return the current token if it matches `kind`, else None."""
+
         if self.current.kind == kind:
             return self.advance()
 
         return None
 
     def expect(self, kind: str, description: str):
+        """Like accept(), but raise a clear ExpressionError on a mismatch."""
+
         token = self.accept(kind)
 
         if token is None:
@@ -206,6 +246,8 @@ class Parser:
         return token
 
     def parse(self):
+        """Parse the whole expression; raise if input remains afterward."""
+
         if self.current.kind == "EOF":
             raise ExpressionError("Enter an expression.")
 
@@ -343,6 +385,10 @@ class Parser:
             )
 
     def parse_primary(self):
+        """The leaf of the grammar: a literal, variable, call, row
+        reference, or a fully parenthesized subexpression.
+        """
+
         token = self.current
 
         if token.kind == "NUMBER":
@@ -506,12 +552,15 @@ class Parser:
             return value
 
         raise ExpressionError(
-            "Expected a number, date, duration, string, variable, function, "
-            "'[column]', or '('.",
+            "Expected a number, date, duration, string, variable, function, '[column]', or '('.",
             token.position,
         )
 
     def parse_call(self, name_token):
+        """Parse a comma-separated argument list after an identifier
+        already confirmed (by parse_primary) to be followed by '('.
+        """
+
         self.expect("LPAREN", "'(' after the function name")
 
         arguments = []
@@ -564,3 +613,6 @@ def variables_in(node) -> tuple[str, ...]:
 
     walk(node)
     return tuple(sorted(names))
+
+
+type Node = Literal | Var | RowRef | UnaryOp | BinOp | Call | Cast

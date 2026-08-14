@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from enum import Enum
+from typing import TypeGuard
 
 # Type Aliases
 type Number = int | Decimal
@@ -26,15 +27,25 @@ class ExpressionError(ValueError):
         self.position = position
 
 
-def is_datetime(value) -> bool:
+def is_datetime(value) -> TypeGuard[datetime]:
+    """Whether `value` is a datetime (as opposed to a bare date or time)."""
+
     return isinstance(value, datetime)
 
 
-def is_date_only(value) -> bool:
+def is_date_only(value) -> TypeGuard[date]:
+    """Whether `value` is a date but *not* a datetime — datetime is a
+    date subclass, so a plain isinstance(value, date) would also
+    match datetimes; category_of()/format_result() need to tell the
+    two apart to pick "date" vs. "datetime" as the category/format.
+    """
+
     return isinstance(value, date) and not isinstance(value, datetime)
 
 
-def is_time_only(value) -> bool:
+def is_time_only(value) -> TypeGuard[time]:
+    """Whether `value` is a clock time (no date component)."""
+
     return isinstance(value, time)
 
 
@@ -100,9 +111,7 @@ class Quantity:
             # here rather than left to leak as a raw traceback — e.g.
             # $5 * infinity() should fail with a clear message, not an
             # uncaught InvalidOperation three layers down.
-            raise ExpressionError(
-                f"{label(self.unit.value)} can't be infinite."
-            ) from error
+            raise ExpressionError(f"{label(self.unit.value)} can't be infinite.") from error
 
         object.__setattr__(self, "value", quantized)
 
@@ -169,6 +178,8 @@ class Type(str):
     type error: no registered rule's key can ever match it.
     """
 
+    fields: tuple[tuple[str | None, Type], ...] | None
+
     def __new__(cls, name: str, fields: tuple[tuple[str | None, Type], ...] | None = None):
         self = str.__new__(cls, name)
         self.fields = fields
@@ -217,7 +228,7 @@ class Column:
     """
 
     name: str
-    values: tuple
+    values: tuple[Value, ...]
     element_type: Type
 
 
@@ -229,7 +240,7 @@ class Table:
     """
 
     schema: tuple[tuple[str, Type], ...]
-    columns: tuple[tuple, ...]
+    columns: tuple[tuple[Value, ...], ...]
 
     @property
     def row_count(self) -> int:
@@ -242,7 +253,7 @@ class Array:
     values with no name. See `array()` in functions.py.
     """
 
-    values: tuple
+    values: tuple[Value, ...]
     element_type: Type
 
 
@@ -254,7 +265,7 @@ class Matrix:
     """
 
     element_type: Type
-    rows: tuple[tuple, ...]
+    rows: tuple[tuple[Value, ...], ...]
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -269,6 +280,29 @@ class Char:
     """
 
     codepoint: int
+
+
+# Every concrete runtime value the engine can produce or hold — the
+# result type of evaluate_node()/evaluate_expression() and the
+# payload type of a Literal AST node. Deliberately excludes `bool`:
+# booleans are represented as plain Python bool (a subclass of int),
+# so they're covered by `int` here in the same way category_of()
+# checks `isinstance(value, bool)` before `isinstance(value, int)`.
+type Value = (
+    Number
+    | bool
+    | str
+    | Temporal
+    | Duration
+    | Quantity
+    | Complex
+    | Blank
+    | Char
+    | Column
+    | Table
+    | Array
+    | Matrix
+)
 
 
 def category_of(value) -> Type:

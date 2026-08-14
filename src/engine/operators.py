@@ -6,6 +6,7 @@ unregistered combination is automatically a type error — no
 special-casing required at the call site.
 """
 
+from collections.abc import Callable
 from decimal import (
     Decimal,
     DivisionByZero,
@@ -26,22 +27,45 @@ from .values import (
     ExpressionError,
     Quantity,
     Unit,
+    Value,
     negate_duration,
     to_decimal,
 )
 
-BINARY_RULES: dict = {}
-UNARY_RULES: dict = {}
+type _BinaryKey = tuple[str, str, str]
+type _UnaryKey = tuple[str, str]
+
+# (result category, implementation) — result may be a plain string or,
+# for a rule whose result category depends on the operand categories
+# (e.g. int + int -> int but int + decimal -> decimal), a callable
+# (left_category, right_category) -> category.
+type _BinaryRule = tuple[str | Callable[[str, str], str], Callable[[Value, Value], Value]]
+type _UnaryRule = tuple[str, Callable[[Value], Value]]
+
+BINARY_RULES: dict[_BinaryKey, _BinaryRule] = {}
+UNARY_RULES: dict[_UnaryKey, _UnaryRule] = {}
 
 NUMERIC = ("int", "decimal")
 
 
 def _spread(category):
-    # "number" is registration shorthand for both numeric categories.
+    """Expand the "number" registration shorthand to both numeric
+    categories; pass any other category through unchanged.
+    """
+
     return NUMERIC if category == "number" else (category,)
 
 
 def register_binary(op, left, right, result, impl, symmetric=False):
+    """Register (op, left, right) -> (result, impl) in BINARY_RULES.
+
+    "number" in `left`/`right` expands to both int and decimal (see
+    _spread). If `symmetric`, also registers the (right, left) pairing
+    with `impl`'s arguments swapped, so e.g. `date + duration` and
+    `duration + date` share one implementation without the caller
+    having to write both directions by hand.
+    """
+
     for left_cat in _spread(left):
         for right_cat in _spread(right):
             BINARY_RULES[(op, left_cat, right_cat)] = (result, impl)
@@ -54,6 +78,8 @@ def register_binary(op, left, right, result, impl, symmetric=False):
 
 
 def register_unary(op, category, result, impl):
+    """Register (op, category) -> (result, impl) in UNARY_RULES."""
+
     UNARY_RULES[(op, category)] = (result, impl)
 
 
@@ -61,10 +87,17 @@ def register_unary(op, category, result, impl):
 
 
 def numeric_result(left_cat, right_cat):
+    """int only stays int with another int; any decimal operand widens
+    the result to decimal (registered as the result-category callable
+    for +, -, *, //, % over "number").
+    """
+
     return "int" if left_cat == right_cat == "int" else "decimal"
 
 
 def _nonzero(value):
+    """Raise if `value` is zero; guards every divide/modulo below."""
+
     if value == 0:
         raise ExpressionError("Cannot divide by zero.")
 
@@ -467,6 +500,11 @@ register_binary("/", "number", "complex", "complex", complex_divide)
 
 
 def compare_key(value):
+    """Unwrap a Quantity to its bare Decimal for comparison, so e.g.
+    $5 < $10 compares 5 < 10 rather than the Quantity objects
+    themselves. Non-Quantity values pass through unchanged.
+    """
+
     return value.value if isinstance(value, Quantity) else value
 
 

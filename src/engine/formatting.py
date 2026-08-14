@@ -14,6 +14,7 @@ from .values import (
     Quantity,
     Table,
     Unit,
+    Value,
     is_date_only,
     is_datetime,
     is_time_only,
@@ -21,6 +22,10 @@ from .values import (
 
 
 def format_duration(value: Duration) -> str:
+    """Render a Duration as e.g. "1y 2mo 3d 4h 5min 6s", omitting any
+    zero component ("0s" if every component is zero).
+    """
+
     components: list[str] = []
 
     months: int = value.months
@@ -63,6 +68,10 @@ def format_duration(value: Duration) -> str:
 
 
 def format_decimal(value: Decimal) -> str:
+    """Render a Decimal with thousands separators and no trailing
+    zeros/decimal point (5.50 -> "5.5", 5.00 -> "5"), or ±∞.
+    """
+
     if value.is_infinite():
         return "-∞" if value < 0 else "∞"
     text = f"{value:,f}"
@@ -93,6 +102,8 @@ def format_complex(value: Complex) -> str:
 
 
 def format_table(value: Table) -> str:
+    """Render a Table as a column-aligned text grid with a header rule."""
+
     headers: list[str] = [name for name, _ in value.schema]
 
     if not headers:
@@ -124,14 +135,23 @@ def format_table(value: Table) -> str:
 
 
 def format_column(value: Column) -> str:
+    """Render a Column as "name: [v1, v2, ...]"."""
+
     return f"{value.name}: [{', '.join(format_result(value=v) for v in value.values)}]"
 
 
 def format_array(value: Array) -> str:
+    """Render an Array as "[v1, v2, ...]"."""
+
     return f"[{', '.join(format_result(value=v) for v in value.values)}]"
 
 
 def format_matrix(value: Matrix) -> str:
+    """Render a Matrix as a right-aligned text grid, every cell padded
+    to the widest cell in the whole matrix (not per-column, unlike
+    format_table — a matrix is homogeneous, so one width fits all).
+    """
+
     if not value.rows:
         return "(empty matrix)"
 
@@ -141,8 +161,12 @@ def format_matrix(value: Matrix) -> str:
     return "\n".join(" | ".join(cell.rjust(width) for cell in row) for row in rows)
 
 
-def format_result(value) -> str:
-    """Format a result value as a string."""
+def format_result(value: Value) -> str:
+    """Render any runtime value the engine can produce as display text
+    — the single formatter the REPL, --bare CLI output, ::text casts,
+    and every format_TYPE() helper above (for nested values) share.
+    """
+
     # bool is a subclass of int: check it first.
     if isinstance(value, bool):
         return (

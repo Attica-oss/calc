@@ -9,17 +9,22 @@ spirit as the operator table, though: an unregistered combination is
 automatically a clean type error, no special-casing required.
 """
 
-import re
+from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_DOWN, Decimal, InvalidOperation
 
 from .formatting import format_result
-from .values import Char, ExpressionError, Quantity, Unit, to_decimal
+from .values import Char, ExpressionError, Quantity, Unit, Value, to_decimal
 
-CAST_RULES: dict = {}
+type _CastKey = tuple[str, str]
+type _CastRule = tuple[str, Callable[[Value], Value]]
+
+CAST_RULES: dict[_CastKey, _CastRule] = {}
 
 
 def register_cast(source_category, target, result_category, impl):
+    """Register (source_category, target) -> (result_category, impl) in CAST_RULES."""
+
     CAST_RULES[(source_category, target)] = (result_category, impl)
 
 
@@ -28,6 +33,10 @@ def register_cast(source_category, target, result_category, impl):
 
 
 def register_field(source_category, singular, impl):
+    """Register a field-extraction cast (e.g. date::year) — shorthand
+    for register_cast() with the result category fixed to "int".
+    """
+
     register_cast(source_category, singular, "int", impl)
     # register_cast(source_category, plural, "int", impl)
 
@@ -178,6 +187,10 @@ def _text_to_decimal(text: str) -> Decimal:
 
 
 def _compose_from_decimal(target: str):
+    """Build a text-to-`target` cast by parsing to Decimal first, then
+    reusing the already-registered decimal-to-`target` implementation.
+    """
+
     _, decimal_impl = CAST_RULES[("decimal", target)]
     return lambda text: decimal_impl(_text_to_decimal(text))
 

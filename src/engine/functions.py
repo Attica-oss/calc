@@ -20,7 +20,7 @@ from .calendar_utils import (
     timedelta_to_duration,
 )
 from .operators import _guard_indeterminate, compare_key
-from .parser import Literal
+from .parser import Call, Literal
 from .values import (
     INFINITY,
     Array,
@@ -33,23 +33,32 @@ from .values import (
     Quantity,
     Table,
     Type,
+    Value,
     category_of,
     negate_duration,
     to_decimal,
 )
 
+# Mirrors evaluator.Category: functions.py can't import it directly,
+# since evaluator.py imports FUNCTIONS/FunctionSpec from here.
+type Category = str | Type
+
 
 @dataclass(frozen=True)
 class FunctionSpec:
+    """One entry in the FUNCTIONS registry: a function's arity,
+    evaluation strategy, static result type, and implementation.
+    """
+
     name: str
     min_args: int
     max_args: int | None  # None means unbounded
     lazy: bool
     # (argument categories, call node) -> result category
-    result_type: Callable
+    result_type: Callable[[list[Category], Call], Category]
     # eager: impl(values) -> value
     # lazy:  impl(argument nodes, environment, evaluate, row_scope) -> value
-    impl: Callable
+    impl: Callable[..., Value]
     # Index (>= 1) of the one argument that's a row expression, type-
     # checked under a row scope derived from argument 0's (the table's)
     # schema instead of the ambient scope. None for every function that
@@ -58,10 +67,16 @@ class FunctionSpec:
 
 
 def _fail(node, message):
+    """Raise an ExpressionError positioned at `node`'s call site."""
+
     raise ExpressionError(message, node.position)
 
 
 def _fixed(category):
+    """A result_type for a function whose result category never
+    depends on its arguments (today(), pi(), blank(), ...).
+    """
+
     return lambda categories, node: category
 
 
@@ -184,6 +199,10 @@ def reject_nonfinite(
     value: Decimal,
     operation: str,
 ) -> None:
+    """Raise if `value` is NaN or infinite, naming `operation` in the
+    error (e.g. "round() cannot operate on NaN.").
+    """
+
     if value.is_nan():
         raise ExpressionError(f"{operation} cannot operate on NaN.")
 
@@ -219,6 +238,10 @@ _ORDERABLE = {"date", "datetime", "time", "currency", "tonnage", "percent", "tex
 
 
 def _min_max_result(name):
+    """Build min()/max()'s result_type: variadic numeric/orderable
+    arguments of one common type, or a single column()/array().
+    """
+
     def result_type(categories, node):
         if len(categories) == 1 and _is_sequence_type(categories[0]):
             _, element_type = categories[0].fields[0]
@@ -257,6 +280,10 @@ def _min_max_result(name):
 
 
 def _min_max_impl(chooser):
+    """Build min()/max()'s impl from Python's `min`/`max` builtin as
+    `chooser`, unwrapping a single column()/array() argument first.
+    """
+
     def impl(values):
         if len(values) == 1 and isinstance(values[0], (Column, Array)):
             values = values[0].values
@@ -392,6 +419,10 @@ def _avg_impl(values):
 
 
 def _complex_only_result(name):
+    """Build re()/im()/conj()'s result_type: one complex argument,
+    result decimal for re()/im() or complex for conj().
+    """
+
     def result_type(categories, node):
         if categories[0] != "complex":
             _fail(node, f"{name}() requires a complex number.")
@@ -571,6 +602,8 @@ def _if_impl(args, environment, evaluate, row_scope):
 
 
 def _and_or_result(name):
+    """Build and()/or()'s result_type: variadic, all-boolean arguments."""
+
     def result_type(categories, node):
         if any(category != "boolean" for category in categories):
             _fail(node, f"{name}()'s arguments must all be boolean.")
@@ -916,6 +949,10 @@ def _at_impl(values):
 
 
 def _require_table(node, category, who):
+    """Raise unless `category` is a table; `who` names the caller
+    (e.g. "filter()'s") for the error message.
+    """
+
     if not _is_type(category, "table"):
         _fail(node, f"{who}'s first argument must be a table.")
 
@@ -1087,6 +1124,10 @@ def _agg_result_label(agg_fn, element_type):
 
 
 def _validate_agg(node, agg_fn, element_type):
+    """Raise unless groupby()'s aggregate column type is compatible
+    with its chosen aggregate function.
+    """
+
     if agg_fn == "avg":
         if element_type in NUMERIC_CATEGORIES or element_type in {
             "currency",
@@ -1166,7 +1207,7 @@ def _groupby_impl(values):
     )
     group_field = table.schema[group_index]
 
-    groups: dict = {}
+    groups: dict[Value, list[int]] = {}
 
     for row_index in range(table.row_count):
         groups.setdefault(table.columns[group_index][row_index], []).append(row_index)
@@ -1200,7 +1241,8 @@ def _groupby_impl(values):
     )
 
 
-FUNCTIONS = {
+FUNCTIONS: dict[str, FunctionSpec] = {
+    # today() -> the current local date.
     "today": FunctionSpec(
         "today",
         0,
@@ -1209,6 +1251,7 @@ FUNCTIONS = {
         _fixed("date"),
         lambda values: datetime.now().date(),
     ),
+    # now() -> the current local datetime, truncated to the second.
     "now": FunctionSpec(
         "now",
         0,
@@ -1223,35 +1266,60 @@ FUNCTIONS = {
     # the call syntax, exactly like every other built-in constant-ish
     # value here. Names are lowercased during parsing, so PI(), Pi(),
     # and pi() all resolve to the same entry.
+    # pi() -> 3.14159... (50 significant digits).
     "pi": FunctionSpec("pi", 0, 0, False, _fixed("decimal"), lambda values: PI),
+    # e() -> 2.71828... (50 significant digits).
     "e": FunctionSpec("e", 0, 0, False, _fixed("decimal"), lambda values: E),
+    # infinity() -> Decimal Infinity.
     "infinity": FunctionSpec(
         "infinity", 0, 0, False, _fixed("decimal"), lambda values: INFINITY
     ),
+    # time(hour, minute[, second]) -> a clock time.
     "time": FunctionSpec("time", 2, 3, False, _time_result, _time_impl),
+    # abs(x) -> the absolute value/magnitude of a number, duration,
+    # quantity, or complex number (complex -> a plain decimal modulus).
     "abs": FunctionSpec("abs", 1, 1, False, _abs_result, _abs_impl),
+    # round(x[, digits]) -> x rounded half-up to `digits` decimal
+    # places (default 0, returning an int).
     "round": FunctionSpec("round", 1, 2, False, _round_result, _round_impl),
+    # ceil(x, multiple) -> x rounded up to the nearest multiple of
+    # `multiple` (Excel's CEILING, not a plain math ceiling).
     "ceil": FunctionSpec("ceil", 2, 2, False, _ceil_result, _ceil_impl),
+    # min(...) / max(...) -> the smallest/largest of the arguments, or
+    # of a single column()/array() argument's elements.
     "min": FunctionSpec(
         "min", 1, None, False, _min_max_result("min"), _min_max_impl(min)
     ),
     "max": FunctionSpec(
         "max", 1, None, False, _min_max_result("max"), _min_max_impl(max)
     ),
+    # sum(...) / avg(...) -> the total/average of the arguments, or of
+    # a single column()/array() argument's elements.
     "sum": FunctionSpec("sum", 1, None, False, _sum_result, _sum_impl),
     "avg": FunctionSpec("avg", 1, None, False, _avg_result, _avg_impl),
+    # re(z)/im(z) -> the real/imaginary part of a complex number, as a
+    # decimal. conj(z) -> its complex conjugate.
     "re": FunctionSpec("re", 1, 1, False, _complex_only_result("re"), _re_impl),
     "im": FunctionSpec("im", 1, 1, False, _complex_only_result("im"), _im_impl),
     "conj": FunctionSpec("conj", 1, 1, False, _complex_only_result("conj"), _conj_impl),
+    # blank() -> the missing-value marker. isblank(x) -> whether x is
+    # blank (the one function that accepts any category).
     "blank": FunctionSpec(
         "blank", 0, 0, False, _fixed("blank"), lambda values: Blank()
     ),
     "isblank": FunctionSpec("isblank", 1, 1, False, _isblank_result, _isblank_impl),
+    # coalesce(x, default) -> `default` if x is blank(), else x.
     "coalesce": FunctionSpec("coalesce", 2, 2, False, _coalesce_result, _coalesce_impl),
+    # if(condition, then, else) -> `then` or `else`, evaluating only
+    # the chosen branch (lazy, so the other branch may safely error).
     "if": FunctionSpec("if", 3, 3, True, _if_result, _if_impl),
+    # and(...)/or(...) -> variadic, short-circuiting boolean logic
+    # (function-call syntax; this language has no infix and/or/not).
     "and": FunctionSpec("and", 2, None, True, _and_or_result("and"), _and_impl),
     "or": FunctionSpec("or", 2, None, True, _and_or_result("or"), _or_impl),
+    # not(x) -> the boolean negation of x.
     "not": FunctionSpec("not", 1, 1, False, _not_result, _not_impl),
+    # days_between(a, b) -> b - a in whole days, as a plain int.
     "days_between": FunctionSpec(
         "days_between",
         2,
@@ -1261,27 +1329,47 @@ FUNCTIONS = {
         lambda values: (values[1] - values[0]).days,
     ),
     # "dayname": FunctionSpec("dayname", 1, 2, False, _dayname_result, _dayname_impl),
+    # startof.../endof... (month/quarter/year) -> the first/last day of
+    # the period containing a date or datetime (datetime in, midnight
+    # datetime out) — DAX's STARTOFMONTH/ENDOFMONTH/... vocabulary.
     "startofmonth": _date_bound_spec("startofmonth", start_of_month),
     "endofmonth": _date_bound_spec("endofmonth", end_of_month),
     "startofquarter": _date_bound_spec("startofquarter", start_of_quarter),
     "endofquarter": _date_bound_spec("endofquarter", end_of_quarter),
     "startofyear": _date_bound_spec("startofyear", start_of_year),
     "endofyear": _date_bound_spec("endofyear", end_of_year),
+    # column(name, v1, v2, ...) -> a named, homogeneously typed column.
+    # table(col1, col2, ...) -> a table built from same-length columns.
     "column": FunctionSpec("column", 2, None, False, _column_result, _column_impl),
     "table": FunctionSpec("table", 1, None, False, _table_result, _table_impl),
+    # rowcount(t)/colcount(t) -> the row/column count of a table or matrix.
     "rowcount": FunctionSpec("rowcount", 1, 1, False, _rowcount_result, _rowcount_impl),
     "colcount": FunctionSpec("colcount", 1, 1, False, _colcount_result, _colcount_impl),
+    # array(v1, v2, ...) -> a headerless, homogeneously typed sequence.
+    # matrix(row1, row2, ...) -> a 2D grid built from same-length,
+    # same-element-type array() rows.
     "array": FunctionSpec("array", 1, None, False, _array_result, _array_impl),
     "matrix": FunctionSpec("matrix", 1, None, False, _matrix_result, _matrix_impl),
+    # length(a) -> an array's element count.
     "length": FunctionSpec("length", 1, 1, False, _length_result, _length_impl),
+    # at(a, i) / at(m, row, col) -> the 1-indexed element of an array,
+    # or the (row, col) element of a matrix.
     "at": FunctionSpec("at", 2, 3, False, _at_result, _at_impl),
+    # filter(t, [row expr]) -> the rows of t where the row expression
+    # is true.
     "filter": FunctionSpec(
         "filter", 2, 2, True, _filter_result, _filter_impl, row_scope_arg=1
     ),
+    # select(t, "col1", "col2", ...) -> t narrowed to just those columns.
     "select": FunctionSpec("select", 2, None, False, _select_result, _select_impl),
+    # extend(t, "new_col", [row expr]) -> t with an extra computed column.
     "extend": FunctionSpec(
         "extend", 3, 3, True, _extend_result, _extend_impl, row_scope_arg=2
     ),
+    # sort(t, [row expr][, "asc"|"desc"]) -> t's rows reordered by the
+    # row expression's value (ascending by default).
     "sort": FunctionSpec("sort", 2, 3, True, _sort_result, _sort_impl, row_scope_arg=1),
+    # groupby(t, "group_col", "agg_col", "sum"|"avg"|"min"|"max"|"count")
+    # -> one row per distinct group_col value, with the aggregate applied.
     "groupby": FunctionSpec("groupby", 4, 4, False, _groupby_result, _groupby_impl),
 }
