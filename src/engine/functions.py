@@ -617,42 +617,42 @@ def _days_between_result(categories, node):
     return "int"
 
 
-# ---- dayname / time-intelligence date boundaries ---------------------
+# # ---- dayname / time-intelligence date boundaries ---------------------
 
-_DAY_ABBREV = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-_DAY_FULL = (
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-    "Sunday",
-)
-
-
-def _dayname_result(categories, node):
-    if categories[0] not in ("date", "datetime"):
-        _fail(node, "dayname() requires a date or datetime.")
-
-    if len(categories) == 2:
-        pattern_node = node.args[1]
-
-        if not isinstance(pattern_node, Literal) or pattern_node.value not in (
-            "%a",
-            "%A",
-        ):
-            _fail(node, 'dayname()\'s pattern must be "%a" or "%A".')
-
-    return "text"
+# _DAY_ABBREV = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+# _DAY_FULL = (
+#     "Monday",
+#     "Tuesday",
+#     "Wednesday",
+#     "Thursday",
+#     "Friday",
+#     "Saturday",
+#     "Sunday",
+# )
 
 
-def _dayname_impl(values):
-    value = values[0]
-    pattern = values[1] if len(values) == 2 else "%a"
-    names = _DAY_FULL if pattern == "%A" else _DAY_ABBREV
+# def _dayname_result(categories, node):
+#     if categories[0] not in ("date", "datetime"):
+#         _fail(node, "dayname() requires a date or datetime.")
 
-    return names[value.weekday()]
+#     if len(categories) == 2:
+#         pattern_node = node.args[1]
+
+#         if not isinstance(pattern_node, Literal) or pattern_node.value not in (
+#             "%a",
+#             "%A",
+#         ):
+#             _fail(node, 'dayname()\'s pattern must be "%a" or "%A".')
+
+#     return "text"
+
+
+# def _dayname_impl(values):
+#     value = values[0]
+#     pattern = values[1] if len(values) == 2 else "%a"
+#     names = _DAY_FULL if pattern == "%A" else _DAY_ABBREV
+
+#     return names[value.weekday()]
 
 
 def _date_bound_spec(name, date_fn):
@@ -1025,7 +1025,7 @@ def _extend_impl(args, environment, evaluate, row_scope):
     )
 
 
-_SORTABLE = NUMERIC_CATEGORIES | _ORDERABLE
+_SORTABLE : set[str] = NUMERIC_CATEGORIES | _ORDERABLE
 
 
 def _sort_result(categories, node):
@@ -1248,7 +1248,7 @@ FUNCTIONS = {
         _days_between_result,
         lambda values: (values[1] - values[0]).days,
     ),
-    "dayname": FunctionSpec("dayname", 1, 2, False, _dayname_result, _dayname_impl),
+    # "dayname": FunctionSpec("dayname", 1, 2, False, _dayname_result, _dayname_impl),
     "startofmonth": _date_bound_spec("startofmonth", start_of_month),
     "endofmonth": _date_bound_spec("endofmonth", end_of_month),
     "startofquarter": _date_bound_spec("startofquarter", start_of_quarter),

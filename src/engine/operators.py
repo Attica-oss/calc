@@ -461,7 +461,7 @@ register_binary("/", "number", "complex", "complex", complex_divide)
 # numeric one, and unary +/-text is deliberately unregistered (a clean
 # type error), same treatment as e.g. unary minus on a boolean.
 
-register_binary("+", "text", "text", "text", lambda a, b: a + b)
+# register_binary("+", "text", "text", "text", lambda a, b: a + b)
 
 # ---- Comparisons -------------------------------------------------
 

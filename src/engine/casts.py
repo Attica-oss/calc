@@ -9,7 +9,8 @@ spirit as the operator table, though: an unregistered combination is
 automatically a clean type error, no special-casing required.
 """
 
-from datetime import date, datetime, time
+import re
+from datetime import date, datetime, time, timedelta
 from decimal import ROUND_DOWN, Decimal, InvalidOperation
 
 from .formatting import format_result
@@ -24,31 +25,57 @@ def register_cast(source_category, target, result_category, impl):
 
 # ---- Field extraction (-> int) ------------------------------------
 #
-# Both singular and plural read naturally here (::day and ::days both
-# make sense on a date), so both are registered rather than forcing
-# one spelling — this is the one place in the cast vocabulary where
-# that ambiguity has no real cost.
 
 
-def register_field(source_category, singular, plural, impl):
+def register_field(source_category, singular, impl):
     register_cast(source_category, singular, "int", impl)
-    register_cast(source_category, plural, "int", impl)
+    # register_cast(source_category, plural, "int", impl)
 
 
-register_field("date", "year", "years", lambda v: v.year)
-register_field("date", "month", "months", lambda v: v.month)
-register_field("date", "day", "days", lambda v: v.day)
+register_field("date", "year", lambda v: v.year)
+register_field("date", "month", lambda v: v.month)
+register_field("date", "day", lambda v: v.day)
 
-register_field("datetime", "year", "years", lambda v: v.year)
-register_field("datetime", "month", "months", lambda v: v.month)
-register_field("datetime", "day", "days", lambda v: v.day)
-register_field("datetime", "hour", "hours", lambda v: v.hour)
-register_field("datetime", "minute", "minutes", lambda v: v.minute)
-register_field("datetime", "second", "seconds", lambda v: v.second)
 
-register_field("time", "hour", "hours", lambda v: v.hour)
-register_field("time", "minute", "minutes", lambda v: v.minute)
-register_field("time", "second", "seconds", lambda v: v.second)
+register_cast("date", "monthname", "text", lambda v: v.strftime("%B"))
+register_cast("date", "dayname", "text", lambda v: v.strftime("%A"))
+
+register_field("date", "weekday", lambda v: v.weekday())
+
+register_field("date", "week", lambda v: v.isocalendar()[1])
+register_cast(
+    "date",
+    "eomonth",
+    "date",
+    lambda v: (v + timedelta(days=32)).replace(day=1) - timedelta(days=1) ,
+)
+
+register_field("datetime", "year", lambda v: v.year)
+register_field("datetime", "month", lambda v: v.month)
+
+register_cast("datetime", "monthname", "text", lambda v: v.strftime("%B"))
+register_cast("datetime", "dayname", "text", lambda v: v.strftime("%A"))
+register_field("datetime", "day", lambda v: v.day)
+
+
+register_field("datetime", "weekday", lambda v: v.weekday())
+register_field("datetime", "week", lambda v: v.isocalendar()[1])
+register_cast(
+    "datetime",
+    "eomonth",
+    "date",
+    lambda v: (
+        (v.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+    ),
+)
+
+register_field("datetime", "hour", lambda v: v.hour)
+register_field("datetime", "minute", lambda v: v.minute)
+register_field("datetime", "second", lambda v: v.second)
+
+register_field("time", "hour", lambda v: v.hour)
+register_field("time", "minute", lambda v: v.minute)
+register_field("time", "second", lambda v: v.second)
 
 # ---- Temporal conversions ------------------------------------------
 
@@ -89,14 +116,20 @@ for _unit_category in ("currency", "tonnage"):
     )
 
 register_cast("percent", "decimal", "decimal", lambda v: v.value)
-register_cast("int", "percent", "percent", lambda v: Quantity(to_decimal(v) / 100, Unit.PERCENT))
-register_cast("decimal", "percent", "percent", lambda v: Quantity(v / 100, Unit.PERCENT))
+register_cast(
+    "int", "percent", "percent", lambda v: Quantity(to_decimal(v) / 100, Unit.PERCENT)
+)
+register_cast(
+    "decimal", "percent", "percent", lambda v: Quantity(v / 100, Unit.PERCENT)
+)
 
 # decimal <-> int: widening is exact and free; narrowing truncates
 # toward zero (a genuine cast, deliberately different from round(),
 # which rounds half-up instead of chopping the fractional part).
 register_cast("int", "decimal", "decimal", lambda v: to_decimal(v))
-register_cast("decimal", "int", "int", lambda v: int(v.to_integral_value(rounding=ROUND_DOWN)))
+register_cast(
+    "decimal", "int", "int", lambda v: int(v.to_integral_value(rounding=ROUND_DOWN))
+)
 register_cast("int", "int", "int", lambda v: v)
 register_cast("decimal", "decimal", "decimal", lambda v: v)
 
@@ -159,7 +192,9 @@ def _text_to_boolean(text: str) -> bool:
     normalized = text.strip().lower()
 
     if normalized not in _BOOLEAN_TEXT:
-        raise ExpressionError(f"{text!r} is not a valid boolean (use 'true' or 'false').")
+        raise ExpressionError(
+            f"{text!r} is not a valid boolean (use 'true' or 'false')."
+        )
 
     return _BOOLEAN_TEXT[normalized]
 
@@ -214,9 +249,7 @@ register_cast("int", "char", "char", _int_to_char)
 
 def _text_to_char(text: str) -> Char:
     if len(text) != 1:
-        raise ExpressionError(
-            f"{text!r} is not a single character (has {len(text)})."
-        )
+        raise ExpressionError(f"{text!r} is not a single character (has {len(text)}).")
 
     return Char(ord(text))
 

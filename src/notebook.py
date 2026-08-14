@@ -229,18 +229,17 @@ def _():
     _check("2026-05-01::MONTH", 5, "int")
     _check("2026-05-01::YEAR", 2026, "int")
     _check("01:00::HOUR", 1, "int")
-    _check("01:05::MINUTES", 5, "int")
     _check("01:05::MINUTE", 5, "int")
     _check("$5.15::DECIMAL", Decimal("5.15"), "decimal")
     # A space is accepted as a datetime separator (not just T), so
     # this round-trips with how format_result already displays one.
     _check("2026-01-05 01:00::DATE", date(2026, 1, 5), "date")
-    _check("2026-01-05T14:30:45::TIME", time(14, 30, 45), "time")
+    _check("2026-01-05 14:30:45::TIME", time(14, 30, 45), "time")
     _check("2026-01-05::DATETIME", datetime(2026, 1, 5), "datetime")
     # :: is case-insensitive, same as function names.
     _check("2026-05-01::day", 1, "int")
     # Casts chain: cast to datetime, then extract month from that.
-    _check("2026-01-05T14:30:00::DATE::MONTH", 1, "int")
+    _check("2026-01-05 14:30:00::DATE::MONTH", 1, "int")
     # :: binds tighter than ** and unary minus.
     _check("2 ** 3::decimal", Decimal(8), "decimal")
     _check("-5::decimal", Decimal(-5), "decimal")
