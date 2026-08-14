@@ -47,7 +47,7 @@ register_cast(
     "date",
     "eomonth",
     "date",
-    lambda v: (v + timedelta(days=32)).replace(day=1) - timedelta(days=1) ,
+    lambda v: (v + timedelta(days=32)).replace(day=1) - timedelta(days=1),
 )
 
 register_field("datetime", "year", lambda v: v.year)
