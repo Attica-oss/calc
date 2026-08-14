@@ -87,8 +87,8 @@ def _is_sequence_type(category) -> bool:
 # constants are limited by the *arithmetic's* precision, not the
 # constant's. Not computed at runtime: there's no benefit to deriving
 # pi via a series each call when the digits never change.
-PI = Decimal("3.14159265358979323846264338327950288419716939937511")
-E = Decimal("2.71828182845904523536028747135266249775724709369996")
+PI: Decimal = Decimal(value="3.14159265358979323846264338327950288419716939937511")
+E: Decimal = Decimal(value="2.71828182845904523536028747135266249775724709369996")
 
 # ---- today / now / time ------------------------------------------
 
@@ -952,7 +952,9 @@ def _filter_impl(args, environment, evaluate, row_scope):
 def _select_result(categories, node):
     _require_table(node, categories[0], "select()")
 
-    by_lower = {name.lower(): (name, field_type) for name, field_type in categories[0].fields}
+    by_lower = {
+        name.lower(): (name, field_type) for name, field_type in categories[0].fields
+    }
     fields = []
     seen_lower = set()
 
@@ -1015,9 +1017,7 @@ def _extend_impl(args, environment, evaluate, row_scope):
             args[2].position,
         )
 
-    new_values = tuple(
-        evaluate(args[2], environment, row) for row in _row_dicts(table)
-    )
+    new_values = tuple(evaluate(args[2], environment, row) for row in _row_dicts(table))
 
     return Table(
         schema=table.schema + ((new_name, category_of(new_values[0])),),
@@ -1025,7 +1025,7 @@ def _extend_impl(args, environment, evaluate, row_scope):
     )
 
 
-_SORTABLE : set[str] = NUMERIC_CATEGORIES | _ORDERABLE
+_SORTABLE: set[str] = NUMERIC_CATEGORIES | _ORDERABLE
 
 
 def _sort_result(categories, node):
@@ -1055,8 +1055,7 @@ def _sort_result(categories, node):
 def _sort_impl(args, environment, evaluate, row_scope):
     table = evaluate(args[0], environment, row_scope)
     descending = (
-        len(args) == 3
-        and evaluate(args[2], environment, row_scope).lower() == "desc"
+        len(args) == 3 and evaluate(args[2], environment, row_scope).lower() == "desc"
     )
 
     keys = [
@@ -1097,7 +1096,9 @@ def _validate_agg(node, agg_fn, element_type):
         }:
             return
 
-        _fail(node, "avg() over a column requires a numeric, quantity, or complex column.")
+        _fail(
+            node, "avg() over a column requires a numeric, quantity, or complex column."
+        )
 
     # sum(): currency/tonnage/percent/duration/complex, same as
     # top-level sum(). min/max: anything orderable (dates, text, ...),
@@ -1113,7 +1114,9 @@ def _validate_agg(node, agg_fn, element_type):
 def _groupby_result(categories, node):
     _require_table(node, categories[0], "groupby()")
 
-    by_lower = {name.lower(): (name, field_type) for name, field_type in categories[0].fields}
+    by_lower = {
+        name.lower(): (name, field_type) for name, field_type in categories[0].fields
+    }
 
     def literal_str(index, what):
         arg_node = node.args[index]
@@ -1131,7 +1134,9 @@ def _groupby_result(categories, node):
         _fail(node, f"groupby(): {group_col!r} is not a column of this table.")
 
     if agg_fn not in _GROUPBY_AGG_FNS:
-        _fail(node, f"groupby()'s aggregate function must be one of {_GROUPBY_AGG_FNS}.")
+        _fail(
+            node, f"groupby()'s aggregate function must be one of {_GROUPBY_AGG_FNS}."
+        )
 
     group_name, group_type = by_lower[group_col.lower()]
 
@@ -1146,14 +1151,19 @@ def _groupby_result(categories, node):
 
     return Type(
         "table",
-        fields=((group_name, group_type), (f"{agg_fn}_{agg_col}", _agg_result_label(agg_fn, element_type))),
+        fields=(
+            (group_name, group_type),
+            (f"{agg_fn}_{agg_col}", _agg_result_label(agg_fn, element_type)),
+        ),
     )
 
 
 def _groupby_impl(values):
     table, group_col, agg_col, agg_fn = values
     names = [name for name, _ in table.schema]
-    group_index = next(i for i, name in enumerate(names) if name.lower() == group_col.lower())
+    group_index = next(
+        i for i, name in enumerate(names) if name.lower() == group_col.lower()
+    )
     group_field = table.schema[group_index]
 
     groups: dict = {}
@@ -1165,7 +1175,9 @@ def _groupby_impl(values):
         result_field = ("count", Type("int"))
         agg_values = [len(rows) for rows in groups.values()]
     else:
-        agg_index = next(i for i, name in enumerate(names) if name.lower() == agg_col.lower())
+        agg_index = next(
+            i for i, name in enumerate(names) if name.lower() == agg_col.lower()
+        )
         element_type = table.schema[agg_index][1]
         result_field = (f"{agg_fn}_{agg_col}", _agg_result_label(agg_fn, element_type))
 

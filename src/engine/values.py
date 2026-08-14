@@ -1,5 +1,5 @@
-"""The value domain: what kinds of things an expression can produce.
-
+"""
+The value domain: what kinds of things an expression can produce.
 Knows nothing about syntax, operators, or functions.
 """
 

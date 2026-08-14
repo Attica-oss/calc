@@ -1,6 +1,7 @@
 """Rendering evaluated values back to display text."""
 
 from decimal import Decimal
+from typing import Literal
 
 from .values import (
     Array,
@@ -20,11 +21,11 @@ from .values import (
 
 
 def format_duration(value: Duration) -> str:
-    components = []
+    components: list[str] = []
 
-    months = value.months
-    days = value.days
-    seconds = value.seconds
+    months: int = value.months
+    days: int = value.days
+    seconds: int = value.seconds
 
     years, remaining_months = divmod(abs(months), 12)
 
@@ -81,32 +82,37 @@ def format_complex(value: Complex) -> str:
     if value.imag == 0:
         return format_decimal(value.real)
 
-    imaginary_text = format_decimal(abs(value.imag))
-    sign = "-" if value.imag < 0 else "+"
+    imaginary_text: str = format_decimal(value=abs(value.imag))
+    sign: Literal["-", "+"] = "-" if value.imag < 0 else "+"
 
     if value.real == 0:
-        prefix = "-" if value.imag < 0 else ""
+        prefix: Literal["-", ""] = "-" if value.imag < 0 else ""
         return f"{prefix}{imaginary_text}i"
 
-    return f"{format_decimal(value.real)}{sign}{imaginary_text}i"
+    return f"{format_decimal(value=value.real)}{sign}{imaginary_text}i"
 
 
 def format_table(value: Table) -> str:
-    headers = [name for name, _ in value.schema]
+    headers: list[str] = [name for name, _ in value.schema]
 
     if not headers:
         return "(empty table)"
 
-    rows = [
-        [format_result(value.columns[column][row]) for column in range(len(headers))]
+    rows: list[list[str]] = [
+        [
+            format_result(value=value.columns[column][row])
+            for column in range(len(headers))
+        ]
         for row in range(value.row_count)
     ]
-    widths = [
-        max(len(headers[i]), *(len(row[i]) for row in rows)) if rows else len(headers[i])
+    widths: list[int] = [
+        max(len(headers[i]), *(len(row[i]) for row in rows))
+        if rows
+        else len(headers[i])
         for i in range(len(headers))
     ]
 
-    lines = [
+    lines: list[str] = [
         " | ".join(headers[i].ljust(widths[i]) for i in range(len(headers))),
         "-+-".join("-" * widths[i] for i in range(len(headers))),
     ]
@@ -118,27 +124,30 @@ def format_table(value: Table) -> str:
 
 
 def format_column(value: Column) -> str:
-    return f"{value.name}: [{', '.join(format_result(v) for v in value.values)}]"
+    return f"{value.name}: [{', '.join(format_result(value=v) for v in value.values)}]"
 
 
 def format_array(value: Array) -> str:
-    return f"[{', '.join(format_result(v) for v in value.values)}]"
+    return f"[{', '.join(format_result(value=v) for v in value.values)}]"
 
 
 def format_matrix(value: Matrix) -> str:
     if not value.rows:
         return "(empty matrix)"
 
-    rows = [[format_result(cell) for cell in row] for row in value.rows]
-    width = max(len(cell) for row in rows for cell in row)
+    rows:list[list[str]] = [[format_result(value=cell) for cell in row] for row in value.rows]
+    width:int = max(len(cell) for row in rows for cell in row)
 
     return "\n".join(" | ".join(cell.rjust(width) for cell in row) for row in rows)
 
 
 def format_result(value) -> str:
+    """Format a result value as a string."""
     # bool is a subclass of int: check it first.
     if isinstance(value, bool):
-        return "TRUE" if value else "FALSE"  # Check if we can change to lowercase true and false
+        return (
+            "TRUE" if value else "FALSE"
+        )
 
     if isinstance(value, Blank):
         return "blank"  # Check if we can change to 'null'

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .casts import CAST_RULES
-from .functions import FUNCTIONS
+from .functions import FUNCTIONS, FunctionSpec
 from .operators import BINARY_RULES, UNARY_RULES
 from .parser import (
     BinOp,
@@ -25,14 +25,20 @@ from .parser import (
 )
 from .values import Column, ExpressionError, Table, Type, category_of, label
 
+type Node = Literal | Var | RowRef | UnaryOp | BinOp | Call | Cast
+
+# Scalar categories such as "int", "date", etc. are strings.
+# Structured categories such as tables use Type.
+type Category = str | Type
+
 
 @dataclass
 class Environment:
-    variables: dict
-    functions: dict
+    variables: dict[str, Category]
+    functions: Mapping[str, FunctionSpec]
 
 
-def _arity_text(spec) -> str:
+def _arity_text(spec: FunctionSpec) -> str:
     if spec.max_args is None:
         suffix = "s" if spec.min_args != 1 else ""
         return f"at least {spec.min_args} argument{suffix}"
@@ -44,7 +50,12 @@ def _arity_text(spec) -> str:
     return f"between {spec.min_args} and {spec.max_args} arguments"
 
 
-def check_types(node, variable_types: dict, functions: dict, row_scope: dict | None = None) -> str:
+def check_types(
+    node: Node,
+    variable_types: Mapping[str, Category],
+    functions: Mapping[str, FunctionSpec],
+    row_scope: Mapping[str, Category] | None = None,
+) -> str:
     """Return the expression's category or raise, without evaluating.
 
     row_scope, when set, is the current table verb's row scope — a
@@ -87,7 +98,12 @@ def check_types(node, variable_types: dict, functions: dict, row_scope: dict | N
         return row_scope[key]
 
     if isinstance(node, UnaryOp):
-        operand = check_types(node.operand, variable_types, functions, row_scope)
+        operand: str = check_types(
+            node=node.operand,
+            variable_types=variable_types,
+            functions=functions,
+            row_scope=row_scope,
+        )
         rule = UNARY_RULES.get((node.op, operand))
 
         if rule is None:
@@ -166,7 +182,8 @@ def check_types(node, variable_types: dict, functions: dict, row_scope: dict | N
                     )
 
                 inner_scope = {
-                    name.lower(): field_type for name, field_type in table_category.fields
+                    name.lower(): field_type
+                    for name, field_type in table_category.fields
                 }
                 categories.append(
                     check_types(argument, variable_types, functions, inner_scope)
@@ -185,7 +202,11 @@ def check_types(node, variable_types: dict, functions: dict, row_scope: dict | N
         # fields instead of a module-load-time registration.
         if isinstance(source, Type) and source.fields and str.__eq__(source, "table"):
             field = next(
-                ((name, field_type) for name, field_type in source.fields if name.lower() == node.target),
+                (
+                    (name, field_type)
+                    for name, field_type in source.fields
+                    if name.lower() == node.target
+                ),
                 None,
             )
 
@@ -239,7 +260,8 @@ def evaluate_node(node, environment: Environment, row_scope: dict | None = None)
                 return spec.impl(node.args, environment, evaluate_node, row_scope)
 
             values = [
-                evaluate_node(argument, environment, row_scope) for argument in node.args
+                evaluate_node(argument, environment, row_scope)
+                for argument in node.args
             ]
 
             return spec.impl(values)
@@ -253,7 +275,9 @@ def evaluate_node(node, environment: Environment, row_scope: dict | None = None)
                 if node.target in names:
                     index = names.index(node.target)
                     name, field_type = value.schema[index]
-                    return Column(name=name, values=value.columns[index], element_type=field_type)
+                    return Column(
+                        name=name, values=value.columns[index], element_type=field_type
+                    )
 
             _, impl = CAST_RULES[(category_of(value), node.target)]
             return impl(value)

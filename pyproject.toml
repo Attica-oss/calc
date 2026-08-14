@@ -19,3 +19,7 @@ dev = [
 
 [tool.ruff.lint]
 ignore = ["DTZ"]
+
+[tool.ty.rules]
+missing-type-argument = "error"
+possibly-unresolved-reference = "warn"

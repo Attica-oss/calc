@@ -136,9 +136,9 @@ def tokenize(expression: str) -> list[Token]:
                 position,
             )
 
-        kind = match.lastgroup
+        kind:str|None = match.lastgroup
         assert kind is not None
-        value = match.group()
+        value:str = match.group()
 
         if kind != "SPACE":
             tokens.append(Token(kind=kind, value=value, position=position))

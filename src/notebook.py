@@ -268,6 +268,11 @@ def _():
     return
 
 
+@app.cell(hide_code=True)
+def _():
+    return
+
+
 @app.cell
 def _():
     # Sample variable bindings — edit these to experiment. In the real
