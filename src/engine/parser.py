@@ -190,9 +190,9 @@ def parse_duration_literal(text: str, position: int) -> Duration:
         raise ExpressionError(f"Invalid duration: {text!r}.", position)
 
     amount_text, unit = match.groups()
-    amount = float(amount_text)
+    amount = Decimal(amount_text)
 
-    if not amount.is_integer():
+    if not amount.to_integral_value():
         raise ExpressionError(
             "Durations must currently use whole numbers, such as 30min, 2h, 3d, 4mo, or 1y.",
             position,

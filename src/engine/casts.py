@@ -56,7 +56,9 @@ register_cast(
     "date",
     "eomonth",
     "date",
-    lambda v: (v.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1),
+    lambda v: (
+        (v.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+    ),
 )
 
 register_field("datetime", "year", lambda v: v.year)
@@ -73,7 +75,9 @@ register_cast(
     "datetime",
     "eomonth",
     "date",
-    lambda v: (v.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1),
+    lambda v: (
+        (v.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+    ),
 )
 
 register_field("datetime", "hour", lambda v: v.hour)
@@ -95,6 +99,43 @@ register_cast("date", "datetime", "datetime", lambda v: datetime.combine(v, time
 register_cast("date", "date", "date", lambda v: v)
 register_cast("time", "time", "time", lambda v: v)
 register_cast("datetime", "datetime", "datetime", lambda v: v)
+
+# ---- Duration to hours, minutes, seconds -------------------------------
+
+
+def duration_seconds(v):
+    return Decimal(v.days * 86400 + v.seconds)
+
+
+register_cast("duration", "duration", "duration", lambda v: v)
+register_cast(
+    "duration",
+    "day",
+    "decimal",
+    lambda v: duration_seconds(v) / Decimal(86400),
+)
+
+register_cast(
+    "duration",
+    "hour",
+    "decimal",
+    lambda v: duration_seconds(v) / Decimal(3600),
+)
+
+register_cast(
+    "duration",
+    "minute",
+    "decimal",
+    lambda v: duration_seconds(v) / Decimal(60),
+)
+
+register_cast(
+    "duration",
+    "second",
+    "decimal",
+    lambda v: duration_seconds(v),
+)
+
 
 # ---- Numeric <-> quantity conversions -------------------------------
 #
@@ -123,14 +164,20 @@ for _unit_category in ("currency", "tonnage"):
     )
 
 register_cast("percent", "decimal", "decimal", lambda v: v.value)
-register_cast("int", "percent", "percent", lambda v: Quantity(to_decimal(v) / 100, Unit.PERCENT))
-register_cast("decimal", "percent", "percent", lambda v: Quantity(v / 100, Unit.PERCENT))
+register_cast(
+    "int", "percent", "percent", lambda v: Quantity(to_decimal(v) / 100, Unit.PERCENT)
+)
+register_cast(
+    "decimal", "percent", "percent", lambda v: Quantity(v / 100, Unit.PERCENT)
+)
 
 # decimal <-> int: widening is exact and free; narrowing truncates
 # toward zero (a genuine cast, deliberately different from round(),
 # which rounds half-up instead of chopping the fractional part).
 register_cast("int", "decimal", "decimal", lambda v: to_decimal(v))
-register_cast("decimal", "int", "int", lambda v: int(v.to_integral_value(rounding=ROUND_DOWN)))
+register_cast(
+    "decimal", "int", "int", lambda v: int(v.to_integral_value(rounding=ROUND_DOWN))
+)
 register_cast("int", "int", "int", lambda v: v)
 register_cast("decimal", "decimal", "decimal", lambda v: v)
 
@@ -197,7 +244,9 @@ def _text_to_boolean(text: str) -> bool:
     normalized = text.strip().lower()
 
     if normalized not in _BOOLEAN_TEXT:
-        raise ExpressionError(f"{text!r} is not a valid boolean (use 'true' or 'false').")
+        raise ExpressionError(
+            f"{text!r} is not a valid boolean (use 'true' or 'false')."
+        )
 
     return _BOOLEAN_TEXT[normalized]
 
