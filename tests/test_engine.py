@@ -80,7 +80,7 @@ def assert_expression_error(
         ("1 + 2", 3, "int"),
         ("7 // 2", 3, "int"),
         ("1 / 2", Decimal("0.5"), "decimal"),
-        ("2 ** 10", Decimal(1024), "decimal"),
+        ("2 ^ 10", Decimal(1024), "decimal"),
         ("7 % 3", 1, "int"),
         ("min(3, 1.5)", Decimal("1.5"), "decimal"),
         ("max(3, 1.5)", Decimal(3), "decimal"),
@@ -89,7 +89,7 @@ def assert_expression_error(
         ("+5", 5, "int"),
         ("2 + 3 * 4", 14, "int"),
         ("(2 + 3) * 4", 20, "int"),
-        ("2 ** 3 ** 2", Decimal(512), "decimal"),
+        ("2 ^ 3 ^ 2", Decimal(512), "decimal"),
     ],
 )
 def test_number_expressions(expression, expected_value, expected_category):
@@ -102,7 +102,7 @@ def test_division_by_zero_is_a_runtime_error(expression):
 
 
 def test_exponent_too_large_is_rejected():
-    assert_expression_error("2 ** 1000", "too large")
+    assert_expression_error("2 ^ 1000", "too large")
 
 
 def test_chained_comparisons_are_rejected():
@@ -290,8 +290,9 @@ def test_constants(expression, expected):
     assert_eval(expression, expected, "decimal")
 
 
-def test_constant_function_names_are_case_insensitive():
-    assert evaluate_expression("pi()").value == evaluate_expression("PI()").value
+def test_function_names_must_be_lowercase():
+    assert_expression_error("PI()", "must be lowercase")
+    assert_expression_error("Sum(1, 2)", "must be lowercase")
 
 
 def test_constants_do_not_shadow_same_named_variables():
@@ -388,15 +389,13 @@ def test_rounding_infinity_is_rejected():
         ("2026-05-01::YEAR", 2026, "int"),
         ("01:00::HOUR", 1, "int"),
         ("01:05::MINUTE", 5, "int"),
-        ("2026-05-01::day", 1, "int"),
-        ("2026-05-01::Day", 1, "int"),
         ("$5.15::DECIMAL", Decimal("5.15"), "decimal"),
         ("2026-01-05 01:00::DATE", date(2026, 1, 5), "date"),
         ("2026-01-05 14:30:45::TIME", time(14, 30, 45), "time"),
         ("2026-01-05::DATETIME", datetime(2026, 1, 5), "datetime"),
         ("2026-01-05 14:30:00::DATE::MONTH", 1, "int"),
-        ("2 ** 3::decimal", Decimal(8), "decimal"),
-        ("-5::decimal", Decimal(-5), "decimal"),
+        ("2 ^ 3::DECIMAL", Decimal(8), "decimal"),
+        ("-5::DECIMAL", Decimal(-5), "decimal"),
         ("5::CURRENCY", Quantity(Decimal(5), Unit.CURRENCY), "currency"),
         ("2.4::TONNAGE", Quantity(Decimal("2.4"), Unit.TONNAGE), "tonnage"),
         ("7.9::INT", 7, "int"),
@@ -412,9 +411,7 @@ def test_casts(expression, expected_value, expected_category):
 def test_percent_casts_are_true_inverses():
     five_percent = evaluate_expression("5::PERCENT").value
     assert five_percent == Quantity(Decimal("0.05"), Unit.PERCENT)
-    assert evaluate_expression("x::DECIMAL", {"x": five_percent}).value == Decimal(
-        "0.05"
-    )
+    assert evaluate_expression("x::DECIMAL", {"x": five_percent}).value == Decimal("0.05")
 
 
 @pytest.mark.parametrize(
@@ -427,6 +424,27 @@ def test_percent_casts_are_true_inverses():
 )
 def test_invalid_casts(expression, fragment):
     assert_expression_error(expression, fragment)
+
+
+@pytest.mark.parametrize(
+    ("expression", "fragment"),
+    [
+        ("2026-05-01::day", "must be uppercase"),
+        ("2026-05-01::Day", "must be uppercase"),
+        ("5::decimal", "must be uppercase"),
+    ],
+)
+def test_cast_targets_must_be_uppercase(expression, fragment):
+    assert_expression_error(expression, fragment)
+
+
+def test_table_field_access_is_exempt_from_cast_casing():
+    # t::colname isn't a fixed-vocabulary cast keyword — it's the
+    # table's own (user-chosen, usually lowercase) column name — so
+    # unlike ::DECIMAL/::DATE/..., it stays case-insensitive.
+    variables = {"t": evaluate_expression('table(column("qty", 1, 2))').value}
+    assert evaluate_expression("t::qty", variables).value.values == (1, 2)
+    assert evaluate_expression("t::QTY", variables).value.values == (1, 2)
 
 
 # Other functions
@@ -513,12 +531,12 @@ def test_text_type_errors(expression, fragment):
 @pytest.mark.parametrize(
     ("expression", "expected_value"),
     [
-        ("5::text", "5"),
-        ("$5.20::text", "$5.20"),
-        ("2.4t::text", "2.400 t"),
-        ("2026-05-01::text", "2026-05-01"),
-        ("(1 = 1)::text", "TRUE"),
-        ('"already text"::text', "already text"),
+        ("5::TEXT", "5"),
+        ("$5.20::TEXT", "$5.20"),
+        ("2.4t::TEXT", "2.400 t"),
+        ("2026-05-01::TEXT", "2026-05-01"),
+        ("(1 = 1)::TEXT", "TRUE"),
+        ('"already text"::TEXT', "already text"),
     ],
 )
 def test_casts_to_text(expression, expected_value):
@@ -528,17 +546,17 @@ def test_casts_to_text(expression, expected_value):
 @pytest.mark.parametrize(
     ("expression", "expected_value", "expected_category"),
     [
-        ('"5"::int', 5, "int"),
-        ('"5.9"::int', 5, "int"),
-        ('"5.5"::decimal', Decimal("5.5"), "decimal"),
-        ('"12.50"::currency', Quantity(Decimal("12.50"), Unit.CURRENCY), "currency"),
-        ('"2.4"::tonnage', Quantity(Decimal("2.4"), Unit.TONNAGE), "tonnage"),
-        ('"5"::percent', Quantity(Decimal("0.05"), Unit.PERCENT), "percent"),
-        ('"true"::boolean', True, "boolean"),
-        ('"FALSE"::boolean', False, "boolean"),
-        ('"2026-01-05"::date', date(2026, 1, 5), "date"),
-        ('"2026-01-05 14:30:00"::datetime', datetime(2026, 1, 5, 14, 30), "datetime"),
-        ('"14:30:00"::time', time(14, 30), "time"),
+        ('"5"::INT', 5, "int"),
+        ('"5.9"::INT', 5, "int"),
+        ('"5.5"::DECIMAL', Decimal("5.5"), "decimal"),
+        ('"12.50"::CURRENCY', Quantity(Decimal("12.50"), Unit.CURRENCY), "currency"),
+        ('"2.4"::TONNAGE', Quantity(Decimal("2.4"), Unit.TONNAGE), "tonnage"),
+        ('"5"::PERCENT', Quantity(Decimal("0.05"), Unit.PERCENT), "percent"),
+        ('"true"::BOOLEAN', True, "boolean"),
+        ('"FALSE"::BOOLEAN', False, "boolean"),
+        ('"2026-01-05"::DATE', date(2026, 1, 5), "date"),
+        ('"2026-01-05 14:30:00"::DATETIME', datetime(2026, 1, 5, 14, 30), "datetime"),
+        ('"14:30:00"::TIME', time(14, 30), "time"),
     ],
 )
 def test_casts_from_text(expression, expected_value, expected_category):
@@ -548,10 +566,10 @@ def test_casts_from_text(expression, expected_value, expected_category):
 @pytest.mark.parametrize(
     ("expression", "fragment"),
     [
-        ('"abc"::int', "not a valid decimal number"),
-        ('"abc"::decimal', "not a valid decimal number"),
-        ('"maybe"::boolean', "not a valid boolean"),
-        ('"not-a-date"::date', "not a valid date"),
+        ('"abc"::INT', "not a valid decimal number"),
+        ('"abc"::DECIMAL', "not a valid decimal number"),
+        ('"maybe"::BOOLEAN', "not a valid boolean"),
+        ('"not-a-date"::DATE', "not a valid date"),
     ],
 )
 def test_casts_from_text_errors(expression, fragment):
@@ -559,12 +577,10 @@ def test_casts_from_text_errors(expression, fragment):
 
 
 def test_percent_text_cast_matches_numeric_percent_cast():
-    # "5"::percent should mean the same thing as 5::percent ("5
+    # "5"::PERCENT should mean the same thing as 5::PERCENT ("5
     # percent"), not the raw ratio 5.0 — both round-trip through the
     # same registered decimal->percent implementation.
-    assert evaluate_expression('"5"::percent').value == evaluate_expression(
-        "5::percent"
-    ).value
+    assert evaluate_expression('"5"::PERCENT').value == evaluate_expression("5::PERCENT").value
 
 
 # Table and Column
@@ -581,18 +597,19 @@ def test_table_and_column_construction():
     table = result.value
     assert isinstance(table, Table)
     assert table.row_count == 2
-    assert table.columns == (("Njord", "Selkie"), (
-        Quantity(Decimal("3.4"), Unit.TONNAGE),
-        Quantity(Decimal("2.1"), Unit.TONNAGE),
-    ))
+    assert table.columns == (
+        ("Njord", "Selkie"),
+        (
+            Quantity(Decimal("3.4"), Unit.TONNAGE),
+            Quantity(Decimal("2.1"), Unit.TONNAGE),
+        ),
+    )
 
 
 def test_column_construction():
     result = evaluate_expression('column("qty", 1, 2, 3)')
     assert result.category == Type("column", fields=(("qty", Type("int")),))
-    assert result.value == Column(
-        name="qty", values=(1, 2, 3), element_type=Type("int")
-    )
+    assert result.value == Column(name="qty", values=(1, 2, 3), element_type=Type("int"))
 
 
 @pytest.mark.parametrize(
@@ -639,11 +656,7 @@ def test_table_field_access_and_rowcount():
 
 
 def test_aggregate_functions_over_a_column():
-    variables = {
-        "t": evaluate_expression(
-            'table(column("qty", 3.4t, 2.1t, 4.4t))'
-        ).value
-    }
+    variables = {"t": evaluate_expression('table(column("qty", 3.4t, 2.1t, 4.4t))').value}
 
     assert_eval("sum(t::qty)", Quantity(Decimal("9.9"), Unit.TONNAGE), "tonnage", variables)
     assert_eval("avg(t::qty)", Quantity(Decimal("3.3"), Unit.TONNAGE), "tonnage", variables)
@@ -675,9 +688,7 @@ def _catch_report():
 
 
 def test_row_ref_outside_any_verb_is_an_error():
-    assert_expression_error(
-        "[qty] > 1", "can only be used inside filter()/extend()/sort()"
-    )
+    assert_expression_error("[qty] > 1", "can only be used inside filter()/extend()/sort()")
 
 
 def test_row_ref_unknown_column_is_an_error():
@@ -693,9 +704,7 @@ def test_row_ref_never_collides_with_a_same_named_outer_variable():
     # variable, not the row.
     t = _catch_report()
     outer_qty = Quantity(Decimal("2.5"), Unit.TONNAGE)
-    result = evaluate_expression(
-        "filter(t, [qty] > qty)", {"t": t, "qty": outer_qty}
-    ).value
+    result = evaluate_expression("filter(t, [qty] > qty)", {"t": t, "qty": outer_qty}).value
     assert result.columns[0] == ("Njord",)  # only the 3.4t row beats 2.5t
 
 
@@ -737,9 +746,7 @@ def test_select_type_errors(expression, fragment):
 
 def test_extend_adds_a_computed_column():
     t = _catch_report()
-    result = evaluate_expression(
-        'extend(t, "value", [qty] * [price])', {"t": t}
-    ).value
+    result = evaluate_expression('extend(t, "value", [qty] * [price])', {"t": t}).value
     assert [name for name, _ in result.schema][-1] == "value"
     assert result.columns[-1] == (
         Quantity(Decimal("1530.00"), Unit.CURRENCY),
@@ -760,9 +767,7 @@ def test_extend_type_errors(expression, fragment):
 
 
 def test_extend_on_an_empty_table_is_a_runtime_error():
-    empty = evaluate_expression(
-        "filter(t, [qty] > 100t)", {"t": _catch_report()}
-    ).value
+    empty = evaluate_expression("filter(t, [qty] > 100t)", {"t": _catch_report()}).value
     assert empty.row_count == 0
     assert_expression_error(
         'extend(t, "value", [qty] * 2)',
@@ -801,9 +806,7 @@ def test_groupby_sum_avg_min_max_count():
         "Selkie": Quantity(Decimal("2.100"), Unit.TONNAGE),
     }
 
-    counted = evaluate_expression(
-        'groupby(t, "vessel", "qty", "count")', variables
-    ).value
+    counted = evaluate_expression('groupby(t, "vessel", "qty", "count")', variables).value
     assert dict(zip(counted.columns[0], counted.columns[1])) == {
         "Njord": 2,
         "Selkie": 1,
@@ -814,15 +817,9 @@ def test_groupby_reuses_the_real_column_aggregation_path():
     # groupby()'s aggregate is FUNCTIONS[agg_fn].impl on a real Column
     # built via column() — the same path sum(t::qty) already exercises
     # — so an int column's sum stays "int", matching sum(t::col).
-    t = evaluate_expression(
-        'table(column("g", "a", "a", "b"), column("n", 1, 2, 3))'
-    ).value
-    result = evaluate_expression(
-        'groupby(t, "g", "n", "sum")', {"t": t}
-    )
-    assert result.category == Type(
-        "table", fields=(("g", Type("text")), ("sum_n", Type("int")))
-    )
+    t = evaluate_expression('table(column("g", "a", "a", "b"), column("n", 1, 2, 3))').value
+    result = evaluate_expression('groupby(t, "g", "n", "sum")', {"t": t})
+    assert result.category == Type("table", fields=(("g", Type("text")), ("sum_n", Type("int"))))
 
 
 @pytest.mark.parametrize(
@@ -851,8 +848,8 @@ def test_verbs_compose():
     # — filter -> extend -> sort -> select chained through one expression.
     t = _catch_report()
     result = evaluate_expression(
-        'select('
-        '  sort('
+        "select("
+        "  sort("
         '    extend(filter(t, [qty] > 1.5t), "value", [qty] * [price]),'
         '    [value], "desc"'
         "  ),"
@@ -950,15 +947,9 @@ def test_matrix_construction_and_access():
     assert matrix.shape == (2, 3)
     assert matrix.rows == ((1, 2, 3), (4, 5, 6))
 
-    assert evaluate_expression(
-        "at(matrix(array(1, 2), array(3, 4)), 2, 1)"
-    ).value == 3
-    assert evaluate_expression(
-        "rowcount(matrix(array(1, 2), array(3, 4)))"
-    ).value == 2
-    assert evaluate_expression(
-        "colcount(matrix(array(1, 2), array(3, 4)))"
-    ).value == 2
+    assert evaluate_expression("at(matrix(array(1, 2), array(3, 4)), 2, 1)").value == 3
+    assert evaluate_expression("rowcount(matrix(array(1, 2), array(3, 4)))").value == 2
+    assert evaluate_expression("colcount(matrix(array(1, 2), array(3, 4)))").value == 2
 
 
 @pytest.mark.parametrize(
@@ -1182,10 +1173,7 @@ def test_table_formatting():
         'table(column("vessel", "Njord", "Selkie"), column("qty", 3.4t, 2.1t))'
     ).value
     assert format_result(table) == (
-        "vessel | qty    \n"
-        "-------+--------\n"
-        "Njord  | 3.400 t\n"
-        "Selkie | 2.100 t"
+        "vessel | qty    \n-------+--------\nNjord  | 3.400 t\nSelkie | 2.100 t"
     )
 
 

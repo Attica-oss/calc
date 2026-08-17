@@ -23,3 +23,14 @@ ignore = ["DTZ"]
 [tool.ty.rules]
 missing-type-argument = "error"
 possibly-unresolved-reference = "warn"
+
+[tool.ty.src]
+# vision.py/notebook.py are marimo apps: marimo runs them standalone
+# from within src/, so their `from engine import ...` is a sibling
+# import that only resolves when src/ itself is on sys.path — a
+# different (and incompatible) module-resolution root than the rest
+# of the project, which imports the package as `src.engine`. Rather
+# than adding src/ as an extra-paths root (which makes ty resolve
+# src/__init__.py's own `from .engine import` ambiguously), exclude
+# these two notebook entry points from type checking.
+exclude = ["src/vision.py", "src/notebook.py"]

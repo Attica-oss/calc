@@ -2,18 +2,28 @@
 
 import re
 from dataclasses import dataclass
+from re import Pattern
 
 from .values import ExpressionError
 
 
 @dataclass(frozen=True)
 class Token:
+    """One lexeme: its grammar kind (a TOKEN_RE group name, e.g.
+    "NUMBER" or "PLUS"), raw text, and zero-based source position
+    (used to point the parser's error caret at the right character).
+    """
+
     kind: str
     value: str
     position: int
 
 
-TOKEN_RE = re.compile(
+# One named group per token kind, tried in order — order matters
+# whenever one pattern is a prefix of another (e.g. DATETIME before
+# DATE, POWER "**" before MULTIPLY "*", LE "<=" before LT "<"), so a
+# longer/more specific alternative always gets first refusal.
+TOKEN_RE: Pattern[str] = re.compile(
     r"""
     (?P<SPACE>\s+)
     |
@@ -78,7 +88,7 @@ TOKEN_RE = re.compile(
         (?:[eE][+-]?\d+)?
     )
     |
-    (?P<POWER>\*\*)
+    (?P<POWER>\^)
     |
     (?P<DOUBLECOLON>::)
     |
@@ -116,6 +126,8 @@ TOKEN_RE = re.compile(
     |
     (?P<COMMA>,)
     |
+    (?P<SEMICOLON>;)
+    |
     (?P<IDENTIFIER>[A-Za-z_][A-Za-z0-9_]*)
     """,
     re.VERBOSE,
@@ -123,6 +135,12 @@ TOKEN_RE = re.compile(
 
 
 def tokenize(expression: str) -> list[Token]:
+    """Split `expression` into a list of Tokens terminated by an EOF
+    token, matching TOKEN_RE repeatedly from left to right. Whitespace
+    is consumed but not emitted as a token. Raises ExpressionError on
+    the first character that matches no alternative.
+    """
+
     tokens: list[Token] = []
     position = 0
 
@@ -136,9 +154,9 @@ def tokenize(expression: str) -> list[Token]:
                 position,
             )
 
-        kind:str|None = match.lastgroup
+        kind: str | None = match.lastgroup
         assert kind is not None
-        value:str = match.group()
+        value: str = match.group()
 
         if kind != "SPACE":
             tokens.append(Token(kind=kind, value=value, position=position))

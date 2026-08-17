@@ -56,6 +56,10 @@ def add_duration_to_datetime(
     value: datetime,
     duration: Duration,
 ) -> datetime:
+    """Add a duration to a datetime, applying months calendar-aware
+    (via add_months) and days/seconds as a plain timedelta.
+    """
+
     adjusted_date = add_months(value.date(), duration.months)
 
     adjusted = value.replace(
@@ -76,6 +80,10 @@ def add_duration_to_datetime(
 
 
 def add_duration_to_time(value: time, duration: Duration) -> time:
+    """Add a duration's days/seconds to a clock time, wrapping around
+    midnight (a bare time has no date to carry the overflow into).
+    """
+
     if duration.months:
         raise ExpressionError(
             "Calendar months or years cannot be added to a clock time."
@@ -93,6 +101,10 @@ def add_duration_to_time(value: time, duration: Duration) -> time:
 
 
 def timedelta_to_duration(value: timedelta) -> Duration:
+    """Convert a plain timedelta (e.g. from a datetime subtraction)
+    into a months=0 Duration of whole days and seconds.
+    """
+
     total_seconds = int(value.total_seconds())
 
     days, seconds = divmod(abs(total_seconds), 86_400)
@@ -105,6 +117,8 @@ def timedelta_to_duration(value: timedelta) -> Duration:
 
 
 def time_to_seconds(value: time) -> int:
+    """Seconds since midnight, used to diff two `time` values."""
+
     return value.hour * 3600 + value.minute * 60 + value.second
 
 
@@ -118,27 +132,39 @@ def time_to_seconds(value: time) -> int:
 
 
 def start_of_month(value: date) -> date:
+    """The first day of `value`'s month."""
+
     return value.replace(day=1)
 
 
 def end_of_month(value: date) -> date:
+    """The last day of `value`'s month."""
+
     return value.replace(day=calendar.monthrange(value.year, value.month)[1])
 
 
 def start_of_quarter(value: date) -> date:
+    """The first day of `value`'s calendar quarter (Jan/Apr/Jul/Oct 1)."""
+
     quarter_start_month = 3 * ((value.month - 1) // 3) + 1
     return value.replace(month=quarter_start_month, day=1)
 
 
 def end_of_quarter(value: date) -> date:
+    """The last day of `value`'s calendar quarter."""
+
     quarter_start_month = 3 * ((value.month - 1) // 3) + 1
     end_month = quarter_start_month + 2
     return date(value.year, end_month, calendar.monthrange(value.year, end_month)[1])
 
 
 def start_of_year(value: date) -> date:
+    """January 1st of `value`'s year."""
+
     return value.replace(month=1, day=1)
 
 
 def end_of_year(value: date) -> date:
+    """December 31st of `value`'s year."""
+
     return value.replace(month=12, day=31)

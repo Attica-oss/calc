@@ -9,17 +9,22 @@ spirit as the operator table, though: an unregistered combination is
 automatically a clean type error, no special-casing required.
 """
 
-import re
+from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_DOWN, Decimal, InvalidOperation
 
 from .formatting import format_result
-from .values import Char, ExpressionError, Quantity, Unit, to_decimal
+from .values import Char, ExpressionError, Quantity, Unit, Value, to_decimal
 
-CAST_RULES: dict = {}
+type _CastKey = tuple[str, str]
+type _CastRule = tuple[str, Callable[[Value], Value]]
+
+CAST_RULES: dict[_CastKey, _CastRule] = {}
 
 
 def register_cast(source_category, target, result_category, impl):
+    """Register (source_category, target) -> (result_category, impl) in CAST_RULES."""
+
     CAST_RULES[(source_category, target)] = (result_category, impl)
 
 
@@ -28,6 +33,10 @@ def register_cast(source_category, target, result_category, impl):
 
 
 def register_field(source_category, singular, impl):
+    """Register a field-extraction cast (e.g. date::year) — shorthand
+    for register_cast() with the result category fixed to "int".
+    """
+
     register_cast(source_category, singular, "int", impl)
     # register_cast(source_category, plural, "int", impl)
 
@@ -36,7 +45,7 @@ register_field("date", "year", lambda v: v.year)
 register_field("date", "month", lambda v: v.month)
 register_field("date", "day", lambda v: v.day)
 
-
+# Returns text for now TODO: return month (which is a type) and day name.
 register_cast("date", "monthname", "text", lambda v: v.strftime("%B"))
 register_cast("date", "dayname", "text", lambda v: v.strftime("%A"))
 
@@ -47,9 +56,7 @@ register_cast(
     "date",
     "eomonth",
     "date",
-    lambda v: (
-        (v.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
-    ),
+    lambda v: (v.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1),
 )
 
 register_field("datetime", "year", lambda v: v.year)
@@ -66,9 +73,7 @@ register_cast(
     "datetime",
     "eomonth",
     "date",
-    lambda v: (
-        (v.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
-    ),
+    lambda v: (v.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1),
 )
 
 register_field("datetime", "hour", lambda v: v.hour)
@@ -118,20 +123,14 @@ for _unit_category in ("currency", "tonnage"):
     )
 
 register_cast("percent", "decimal", "decimal", lambda v: v.value)
-register_cast(
-    "int", "percent", "percent", lambda v: Quantity(to_decimal(v) / 100, Unit.PERCENT)
-)
-register_cast(
-    "decimal", "percent", "percent", lambda v: Quantity(v / 100, Unit.PERCENT)
-)
+register_cast("int", "percent", "percent", lambda v: Quantity(to_decimal(v) / 100, Unit.PERCENT))
+register_cast("decimal", "percent", "percent", lambda v: Quantity(v / 100, Unit.PERCENT))
 
 # decimal <-> int: widening is exact and free; narrowing truncates
 # toward zero (a genuine cast, deliberately different from round(),
 # which rounds half-up instead of chopping the fractional part).
 register_cast("int", "decimal", "decimal", lambda v: to_decimal(v))
-register_cast(
-    "decimal", "int", "int", lambda v: int(v.to_integral_value(rounding=ROUND_DOWN))
-)
+register_cast("decimal", "int", "int", lambda v: int(v.to_integral_value(rounding=ROUND_DOWN)))
 register_cast("int", "int", "int", lambda v: v)
 register_cast("decimal", "decimal", "decimal", lambda v: v)
 
@@ -178,6 +177,10 @@ def _text_to_decimal(text: str) -> Decimal:
 
 
 def _compose_from_decimal(target: str):
+    """Build a text-to-`target` cast by parsing to Decimal first, then
+    reusing the already-registered decimal-to-`target` implementation.
+    """
+
     _, decimal_impl = CAST_RULES[("decimal", target)]
     return lambda text: decimal_impl(_text_to_decimal(text))
 
@@ -194,9 +197,7 @@ def _text_to_boolean(text: str) -> bool:
     normalized = text.strip().lower()
 
     if normalized not in _BOOLEAN_TEXT:
-        raise ExpressionError(
-            f"{text!r} is not a valid boolean (use 'true' or 'false')."
-        )
+        raise ExpressionError(f"{text!r} is not a valid boolean (use 'true' or 'false').")
 
     return _BOOLEAN_TEXT[normalized]
 
