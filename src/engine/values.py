@@ -115,6 +115,8 @@ class Quantity:
 
         object.__setattr__(self, "value", quantized)
 
+    # def __add__(self, other):
+    #     return Quantity(self.value + other.value, self.unit)
 
 @dataclass(frozen=True)
 class Complex:
@@ -255,6 +257,9 @@ class Array:
 
     values: tuple[Value, ...]
     element_type: Type
+
+    # def __add__(self, other: Array) -> Array:
+    #     return Array(values=self.values + other.values, element_type=self.element_type)
 
 
 @dataclass(frozen=True)

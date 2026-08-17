@@ -13,6 +13,7 @@ from decimal import (
     InvalidOperation,
     Overflow,
 )
+from platform import android_ver
 
 from .calendar_utils import (
     add_duration_to_date,
@@ -22,9 +23,11 @@ from .calendar_utils import (
     timedelta_to_duration,
 )
 from .values import (
+    Array,
     Complex,
     Duration,
     ExpressionError,
+    Number,
     Quantity,
     Unit,
     Value,
@@ -39,7 +42,9 @@ type _UnaryKey = tuple[str, str]
 # for a rule whose result category depends on the operand categories
 # (e.g. int + int -> int but int + decimal -> decimal), a callable
 # (left_category, right_category) -> category.
-type _BinaryRule = tuple[str | Callable[[str, str], str], Callable[[Value, Value], Value]]
+type _BinaryRule = tuple[
+    str | Callable[[str, str], str], Callable[[Value, Value], Value]
+]
 type _UnaryRule = tuple[str, Callable[[Value], Value]]
 
 BINARY_RULES: dict[_BinaryKey, _BinaryRule] = {}
@@ -192,7 +197,8 @@ register_binary("**", "number", "number", "decimal", numeric_power)
 # ---- Durations and temporals -------------------------------------
 
 
-def duration_add(a, b):
+def duration_add(a, b) -> Duration:
+    """Summing durations"""
     return Duration(
         months=a.months + b.months,
         days=a.days + b.days,
@@ -200,11 +206,13 @@ def duration_add(a, b):
     )
 
 
-def duration_subtract(a, b):
+def duration_subtract(a, b) -> Duration:
+    """Subtracting durations"""
     return duration_add(a, negate_duration(b))
 
 
-def duration_scale(value, multiplier):
+def duration_scale(value, multiplier: Number) -> Duration:
+    """Scaling durations"""
     return Duration(
         months=value.months * multiplier,
         days=value.days * multiplier,
@@ -212,7 +220,8 @@ def duration_scale(value, multiplier):
     )
 
 
-def duration_divide(value, divisor):
+def duration_divide(value, divisor) -> Duration:
+    """Dividing durations"""
     _nonzero(divisor)
 
     if value.months % divisor or value.days % divisor or value.seconds % divisor:
@@ -287,6 +296,26 @@ register_binary(
 # message before evaluation.
 register_binary("*", "duration", "int", "duration", duration_scale, symmetric=True)
 register_binary("/", "duration", "int", "duration", duration_divide)
+
+
+# ---- Arrays ----------------
+#
+# Array operators
+
+
+def array_add(a: Array, b: Array) -> Array:
+    if len(a.values) != len(b.values):
+        raise ValueError("Arrays must have the same length")
+
+    values = tuple(numeric_add(x, y) for x, y in zip(a.values, b.values))
+
+    return Array(
+        values=values,
+        element_type=a.element_type,
+    )
+
+
+register_binary("+", "array", "array", "array", array_add)
 
 # ---- Quantities (currency, tonnage, and future units) ------------
 
