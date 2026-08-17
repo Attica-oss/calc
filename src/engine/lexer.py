@@ -88,7 +88,7 @@ TOKEN_RE: Pattern[str] = re.compile(
         (?:[eE][+-]?\d+)?
     )
     |
-    (?P<POWER>\*\*)
+    (?P<POWER>\^)
     |
     (?P<DOUBLECOLON>::)
     |
@@ -125,6 +125,8 @@ TOKEN_RE: Pattern[str] = re.compile(
     (?P<RBRACKET>\])
     |
     (?P<COMMA>,)
+    |
+    (?P<SEMICOLON>;)
     |
     (?P<IDENTIFIER>[A-Za-z_][A-Za-z0-9_]*)
     """,

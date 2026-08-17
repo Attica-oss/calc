@@ -89,16 +89,35 @@ class Call:
 
 @dataclass(frozen=True)
 class Cast:
-    """value::target — a type conversion or field extraction.
+    """value::target — a type conversion, field extraction, or table
+    column access.
 
-    target is a fixed, lowercased vocabulary (day, month, year, date,
-    decimal, ...), not a general expression, so there's nothing to
-    evaluate on the right side — it's closer to a keyword than an
-    operand. See CAST_RULES (casts.py) for what's registered.
+    target is lowercased for dispatch (CAST_RULES lookups and table
+    field matching are both case-insensitive), but raw_target keeps
+    the text exactly as written, so check_types can enforce that a
+    *built-in* cast keyword (::DATE, ::YEAR, ...) was written in
+    uppercase — table field access (t::qty) is exempt, since a
+    column's name is user-chosen, not part of the fixed vocabulary.
     """
 
     value: Node
     target: str
+    raw_target: str
+    position: int
+
+
+@dataclass(frozen=True)
+class Let:
+    """let NAME = expr — binds a variable for the rest of a script.
+
+    Script-only: unlike every other node above, a Let never nests
+    inside an expression (it can't appear as a function argument or
+    operand) — it only ever appears as a top-level element of the
+    tuple parse_script() returns. See Parser.parse_statement().
+    """
+
+    name: str
+    value: Node
     position: int
 
 
@@ -261,6 +280,60 @@ class Parser:
 
         return result
 
+    def parse_statement(self) -> Statement:
+        """A single script statement: 'let NAME = expr' or a plain
+        expression. Committing to a let-statement requires a 3-token
+        lookahead (IDENTIFIER "let", IDENTIFIER, EQ) so that a
+        variable actually named 'let' still parses fine everywhere
+        else, e.g. 'let * 2' or 'let::DECIMAL'.
+        """
+
+        if (
+            self.current.kind == "IDENTIFIER"
+            and self.current.value == "let"
+            and self.index + 2 < len(self.tokens)
+            and self.tokens[self.index + 1].kind == "IDENTIFIER"
+            and self.tokens[self.index + 2].kind == "EQ"
+        ):
+            let_token = self.advance()
+            name_token = self.advance()
+            self.advance()  # '='
+
+            return Let(
+                name=name_token.value,
+                value=self.parse_comparison(),
+                position=let_token.position,
+            )
+
+        return self.parse_comparison()
+
+    def parse_script(self) -> tuple[Statement, ...]:
+        """Parse ';'-separated statements: 'let x = 1; let y = 2; x + y'.
+
+        A single trailing ';' is allowed; anything past it must still
+        be a real statement, not an empty one — 'x;;y' is rejected the
+        same way a stray token anywhere else would be.
+        """
+
+        if self.current.kind == "EOF":
+            raise ExpressionError("Enter an expression.")
+
+        statements = [self.parse_statement()]
+
+        while self.accept("SEMICOLON"):
+            if self.current.kind == "EOF":
+                break
+
+            statements.append(self.parse_statement())
+
+        if self.current.kind != "EOF":
+            raise ExpressionError(
+                f"Unexpected {self.current.value!r}.",
+                self.current.position,
+            )
+
+        return tuple(statements)
+
     def parse_comparison(self):
         left = self.parse_addition()
 
@@ -381,6 +454,7 @@ class Parser:
             value = Cast(
                 value=value,
                 target=target_token.value.lower(),
+                raw_target=target_token.value,
                 position=token.position,
             )
 
@@ -561,6 +635,13 @@ class Parser:
         already confirmed (by parse_primary) to be followed by '('.
         """
 
+        if name_token.value != name_token.value.lower():
+            raise ExpressionError(
+                f"Function names must be lowercase: "
+                f"use {name_token.value.lower()!r} instead of {name_token.value!r}.",
+                name_token.position,
+            )
+
         self.expect("LPAREN", "'(' after the function name")
 
         arguments = []
@@ -585,6 +666,12 @@ def parse(expression: str):
     """Parse an expression into an AST without evaluating it."""
 
     return Parser(expression).parse()
+
+
+def parse_script(expression: str) -> tuple[Statement, ...]:
+    """Parse a ';'-separated sequence of statements without evaluating it."""
+
+    return Parser(expression).parse_script()
 
 
 def variables_in(node) -> tuple[str, ...]:
@@ -616,3 +703,4 @@ def variables_in(node) -> tuple[str, ...]:
 
 
 type Node = Literal | Var | RowRef | UnaryOp | BinOp | Call | Cast
+type Statement = Node | Let

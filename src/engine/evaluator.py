@@ -6,7 +6,7 @@ surface before any side effects or partial evaluation.
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .casts import CAST_RULES
@@ -16,11 +16,13 @@ from .parser import (
     BinOp,
     Call,
     Cast,
+    Let,
     Literal,
     RowRef,
     UnaryOp,
     Var,
     parse,
+    parse_script,
     variables_in,
 )
 from .values import Column, ExpressionError, Table, Type, Value, category_of, label
@@ -233,6 +235,17 @@ def check_types(
                 node.position,
             )
 
+        # Only enforced once the target is confirmed to be a real
+        # built-in cast keyword (not a table's own column name, which
+        # already returned above, and not a typo — that already
+        # raised "Cannot cast" regardless of casing).
+        if node.raw_target != node.raw_target.upper():
+            raise ExpressionError(
+                f"Cast targets must be uppercase: "
+                f"use '::{node.raw_target.upper()}' instead of '::{node.raw_target}'.",
+                node.position,
+            )
+
         return rule[0]
 
     raise ExpressionError("Unsupported expression node.")
@@ -315,18 +328,28 @@ def evaluate_node(
 
 @dataclass(frozen=True)
 class EvaluationResult:
-    """What evaluate_expression() hands back: the computed value, its
-    static category (as a display string), and the variable names the
-    expression referenced.
+    """What evaluate_expression()/evaluate_script() hands back: the
+    computed value, its static category (as a display string), and
+    the variable names the expression referenced.
 
     value is typed Any rather than Value: callers branch on `category`
     (a runtime string) to know which concrete type to expect, the same
     dynamic-by-design pattern as e.g. json.loads()'s return type.
+
+    bindings and assigned only carry information for evaluate_script():
+    bindings holds every 'let NAME = expr' binding made anywhere in
+    the script (so a caller with persistent state, like a REPL, can
+    merge them into its own variable scope), and assigned is the name
+    the *last* statement bound, when that statement was itself a let
+    (so the caller can tell "the script's result is a fresh binding"
+    apart from "the script's result is an ordinary value").
     """
 
     value: Any
     category: str
     variables: tuple[str, ...]
+    bindings: Mapping[str, Any] = field(default_factory=dict)
+    assigned: str | None = None
 
 
 def evaluate_expression(
@@ -368,6 +391,82 @@ def evaluate_expression(
         value=value,
         category=category,
         variables=variables_in(node),
+    )
+
+
+def evaluate_script(
+    expression: str,
+    variables: Mapping[str, Any] | None = None,
+    functions: Mapping[str, Any] | None = None,
+) -> EvaluationResult:
+    """tokenize -> parse -> type check -> evaluate a ';'-separated
+    sequence of statements, e.g. "let x = 5; let y = x * 2; y".
+
+    Each 'let NAME = expr' statement binds NAME for every statement
+    after it, including later let statements — variable_types and
+    environment.variables both grow as the script runs, so unlike
+    evaluate_expression() this walk can't type-check the whole script
+    up front; each statement is checked only once the ones before it
+    have already been evaluated. The result is the last statement's
+    value and category — for a script ending in a let, that's the
+    value just bound (see EvaluationResult.assigned).
+
+    variables/functions have the same meaning as in
+    evaluate_expression(); pre-existing variables can be read but not
+    reassigned by a let (shadowing isn't supported — see check_types's
+    Var branch, which resolves a name to a single category).
+    """
+
+    if not isinstance(expression, str):
+        raise TypeError("The expression must be text.")
+
+    if len(expression) > 500:
+        raise ExpressionError("The expression is too long.")
+
+    variables = {} if variables is None else dict(variables)
+    functions = FUNCTIONS if functions is None else dict(functions)
+
+    variable_types: dict[str, Category] = {
+        name: category_of(value) for name, value in variables.items()
+    }
+    environment = Environment(variables=variables, functions=functions)
+
+    bound: dict[str, Any] = {}
+    referenced: set[str] = set()
+    last_assigned: str | None = None
+    category: Category = "blank"
+    value: Any = None
+
+    try:
+        for statement in parse_script(expression):
+            if isinstance(statement, Let):
+                category = check_types(statement.value, variable_types, functions)
+                value = evaluate_node(statement.value, environment)
+
+                variable_types[statement.name] = category
+                environment.variables[statement.name] = value
+                bound[statement.name] = value
+                last_assigned = statement.name
+
+                referenced.update(
+                    name for name in variables_in(statement.value) if name not in bound
+                )
+                continue
+
+            category = check_types(statement, variable_types, functions)
+            value = evaluate_node(statement, environment)
+            last_assigned = None
+
+            referenced.update(name for name in variables_in(statement) if name not in bound)
+    except RecursionError as error:
+        raise ExpressionError("The expression is nested too deeply.") from error
+
+    return EvaluationResult(
+        value=value,
+        category=category,
+        variables=tuple(sorted(referenced)),
+        bindings=bound,
+        assigned=last_assigned,
     )
 
 

@@ -45,7 +45,9 @@ from rich.console import Console
 from rich.theme import Theme
 
 from src.engine import (
+    EvaluationResult,
     ExpressionError,
+    Value,
     category_of,
     evaluate_expression,
     format_result,
@@ -154,10 +156,16 @@ def clear_screen(out: Console) -> None:
 
 
 def value_style(category: str) -> str:
+    """The rich style name for a value of this category (falls back to
+    plain bold-green for any category with no dedicated color).
+    """
+
     return CATEGORY_STYLES.get(category, "calc.value")
 
 
 def styled_value(text: str, category: str) -> str:
+    """Wrap `text` in the rich markup for its category's color."""
+
     style = value_style(category)
     return f"[{style}]{text}[/{style}]"
 
@@ -172,7 +180,11 @@ def print_error(expression: str, error: ExpressionError, out: Console) -> None:
         out.print("    " + " " * error.position + "^", style="calc.pointer")
 
 
-def print_result(result, out: Console, *, bare: bool = False) -> None:
+def print_result(result: EvaluationResult, out: Console, *, bare: bool = False) -> None:
+    """Print an evaluation result, styled by category (or, if `bare`,
+    just the formatted value with no category suffix — for scripting).
+    """
+
     if bare:
         out.print(format_result(result.value), style=value_style(result.category))
         return
@@ -183,7 +195,7 @@ def print_result(result, out: Console, *, bare: bool = False) -> None:
     )
 
 
-def bind_variables(definitions: list[str]) -> dict:
+def bind_variables(definitions: list[str]) -> dict[str, Value]:
     """Evaluate --var NAME=EXPR definitions, left to right.
 
     Each value is itself an expression evaluated by the engine, so
@@ -191,7 +203,7 @@ def bind_variables(definitions: list[str]) -> dict:
     later definitions can reference earlier ones.
     """
 
-    variables: dict = {}
+    variables: dict[str, Value] = {}
 
     for definition in definitions:
         name, separator, expression = definition.partition("=")
@@ -217,7 +229,11 @@ def bind_variables(definitions: list[str]) -> dict:
     return variables
 
 
-def run_once(expression: str, variables: dict, bare: bool) -> int:
+def run_once(expression: str, variables: dict[str, Value], bare: bool) -> int:
+    """Evaluate one expression and print its formatted result; return
+    the process exit code (0 on success, 1 on an ExpressionError).
+    """
+
     try:
         result = evaluate_expression(expression, variables)
     except ExpressionError as error:
@@ -228,7 +244,11 @@ def run_once(expression: str, variables: dict, bare: bool) -> int:
     return 0
 
 
-def run_repl(variables: dict) -> int:
+def run_repl(variables: dict[str, Value]) -> int:
+    """Run the interactive REPL loop (let-bindings, ans, vars/clear/reset/
+    exit) until the user quits; return the process exit code.
+    """
+
     try:
         import readline  # noqa: F401  (line editing + history when available)
     except ImportError:

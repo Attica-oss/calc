@@ -1,8 +1,10 @@
 # calc
 
-**calc** is a strongly typed expression language for calculations, dates, quantities, and tabular data.
+**calc** is a strongly typed expression language for calculations of dates, durations, quantities, and for manipulating tabular data.
 
-It combines the convenience of spreadsheet-style formulas with explicit types and predictable evaluation. Decimal and monetary calculations avoid binary floating-point surprises, calendar arithmetic understands real months and leap years, and invalid type combinations fail explicitly instead of being silently coerced.
+It combines the convenience of spreadsheet-style formulas with explicit types and predictable evaluation. For monetary calculations,we avoid binary floating-point surprises by using `Decimal`, calendar arithmetic understands real months and leap years, and easy to use syntax for retrieving date/time fields and invalid type combinations fail explicitly instead of being silently coerced.
+
+Examples:
 
 ```text
 calc> $450 * 2.4t
@@ -71,7 +73,7 @@ calc> 1 + 2 * 3
 calc> 1 / 2
 0.5  (decimal)
 
-calc> 2 ** 10
+calc> 2 ^ 10
 1,024  (decimal)
 ```
 
@@ -85,7 +87,7 @@ calc> 7 % 3
 1  (int)
 ```
 
-### Exact money
+### Currency (Exact money)
 
 ```text
 calc> $0.10 + $0.20

@@ -33,6 +33,7 @@ from .evaluator import (
     check_types,
     evaluate_expression,
     evaluate_node,
+    evaluate_script,
 )
 from .formatting import (
     format_array,
@@ -51,6 +52,7 @@ from .parser import (
     BinOp,
     Call,
     Cast,
+    Let,
     Literal,
     Parser,
     RowRef,
@@ -58,6 +60,7 @@ from .parser import (
     Var,
     parse,
     parse_duration_literal,
+    parse_script,
     variables_in,
 )
 from .values import (
@@ -109,6 +112,7 @@ __all__ = [
     "EvaluationResult",
     "ExpressionError",
     "FunctionSpec",
+    "Let",
     "Literal",
     "Matrix",
     "Parser",
@@ -130,6 +134,7 @@ __all__ = [
     "compare_key",
     "evaluate_expression",
     "evaluate_node",
+    "evaluate_script",
     "format_array",
     "format_column",
     "format_complex",
@@ -145,6 +150,7 @@ __all__ = [
     "negate_duration",
     "parse",
     "parse_duration_literal",
+    "parse_script",
     "register_cast",
     "register_field",
     "time_to_seconds",
