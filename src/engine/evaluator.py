@@ -11,7 +11,7 @@ from typing import Any
 
 from .casts import CAST_RULES
 from .functions import FUNCTIONS, FunctionSpec
-from .operators import BINARY_RULES, UNARY_RULES
+from .operators import resolve_binary, resolve_unary
 from .parser import (
     BinOp,
     Call,
@@ -124,7 +124,7 @@ def check_types(
             functions=functions,
             row_scope=row_scope,
         )
-        rule = UNARY_RULES.get((node.op, operand))
+        rule = resolve_unary(node.op, operand)
 
         if rule is None:
             raise ExpressionError(
@@ -137,7 +137,7 @@ def check_types(
     if isinstance(node, BinOp):
         left = check_types(node.left, variable_types, functions, row_scope)
         right = check_types(node.right, variable_types, functions, row_scope)
-        rule = BINARY_RULES.get((node.op, left, right))
+        rule = resolve_binary(node.op, left, right)
 
         if rule is None:
             raise ExpressionError(
@@ -282,14 +282,13 @@ def evaluate_node(
         if isinstance(node, UnaryOp):
             operand = evaluate_node(node.operand, environment, row_scope)
             category = category_of(operand)
-            _, impl = UNARY_RULES[(node.op, category)]
+            _, impl = resolve_unary(node.op, category)
             return impl(operand)
 
         if isinstance(node, BinOp):
             left = evaluate_node(node.left, environment, row_scope)
             right = evaluate_node(node.right, environment, row_scope)
-            key = (node.op, category_of(left), category_of(right))
-            _, impl = BINARY_RULES[key]
+            _, impl = resolve_binary(node.op, category_of(left), category_of(right))
             return impl(left, right)
 
         if isinstance(node, Call):

@@ -13,7 +13,6 @@ from decimal import (
     InvalidOperation,
     Overflow,
 )
-from platform import android_ver
 
 from .calendar_utils import (
     add_duration_to_date,
@@ -27,8 +26,10 @@ from .values import (
     Complex,
     Duration,
     ExpressionError,
+    Matrix,
     Number,
     Quantity,
+    Type,
     Unit,
     Value,
     negate_duration,
@@ -42,9 +43,7 @@ type _UnaryKey = tuple[str, str]
 # for a rule whose result category depends on the operand categories
 # (e.g. int + int -> int but int + decimal -> decimal), a callable
 # (left_category, right_category) -> category.
-type _BinaryRule = tuple[
-    str | Callable[[str, str], str], Callable[[Value, Value], Value]
-]
+type _BinaryRule = tuple[str | Callable[[str, str], str], Callable[[Value, Value], Value]]
 type _UnaryRule = tuple[str, Callable[[Value], Value]]
 
 BINARY_RULES: dict[_BinaryKey, _BinaryRule] = {}
@@ -159,9 +158,7 @@ def numeric_divide(a, b):
     try:
         return left / right
     except InvalidOperation as error:
-        raise ExpressionError(
-            "The division produced an indeterminate result."
-        ) from error
+        raise ExpressionError("The division produced an indeterminate result.") from error
 
 
 def numeric_floordiv(a, b):
@@ -273,9 +270,7 @@ register_binary(
 # Consistency fix: every temporal difference is now a duration.
 # (date - date used to return a bare int; days_between() covers
 # the "give me a number" case.)
-register_binary(
-    "-", "date", "date", "duration", lambda a, b: Duration(days=(a - b).days)
-)
+register_binary("-", "date", "date", "duration", lambda a, b: Duration(days=(a - b).days))
 register_binary(
     "-",
     "datetime",
@@ -298,24 +293,258 @@ register_binary("*", "duration", "int", "duration", duration_scale, symmetric=Tr
 register_binary("/", "duration", "int", "duration", duration_divide)
 
 
-# ---- Arrays ----------------
+# ---- Collections: element-wise lifting ---------------------------
 #
-# Array operators
+# Arrays and matrices deliberately have *no* registered rules of their
+# own. Their category is a compound Type (e.g. array{currency}), which
+# by construction never equals a flat dispatch key like "array" (see
+# values.Type), so a row registered under "array" could never match
+# anything and would silently do nothing.
+#
+# Instead, an operator on a collection is *lifted* from the rule
+# already registered for its element type: array{X} + array{X}
+# resolves ("+", X, X), applies that scalar impl element-wise, and
+# takes its result category as the new element type. So
+# array{currency} + array{currency} works because currency + currency
+# does; array{int} / array{int} yields array{decimal} because int /
+# int yields decimal; array{text} + array{text} stays a type error
+# because text + text is one. Every element type is covered for free,
+# and "no silent coercion" is preserved by construction.
+#
+# A scalar operand broadcasts: array{currency} * 2 resolves
+# ("*", "currency", "int") and scales every element.
+
+# Arithmetic only. Comparisons are excluded on purpose: everywhere
+# else in the language `a = b` is a boolean, and lifting would make
+# array = array an array{boolean} that and()/if() can't consume.
+ELEMENTWISE_BINARY_OPS = frozenset({"+", "-", "*", "/", "//", "%", "**"})
+ELEMENTWISE_UNARY_OPS = frozenset({"+", "-"})
+
+COLLECTION_KINDS = ("array", "matrix")
 
 
-def array_add(a: Array, b: Array) -> Array:
-    if len(a.values) != len(b.values):
-        raise ValueError("Arrays must have the same length")
+def _as_type(category) -> Type:
+    """Normalize a result category (which a flat registration writes as
+    a plain string) into a Type, preserving an already-compound one.
+    """
 
-    values = tuple(numeric_add(x, y) for x, y in zip(a.values, b.values))
+    return category if isinstance(category, Type) else Type(category)
 
-    return Array(
-        values=values,
-        element_type=a.element_type,
+
+def _element_type(category, kind: str) -> Type | None:
+    """The element type of an array/matrix category, or None if
+    `category` isn't a collection of that kind.
+    """
+
+    if not isinstance(category, Type) or not str.__eq__(category, kind):
+        return None
+
+    fields = category.fields
+
+    if not fields or len(fields) != 1 or fields[0][0] is not None:
+        return None
+
+    return _as_type(fields[0][1])
+
+
+def _collection(category) -> tuple[str, Type] | None:
+    """(kind, element type) if `category` is an array or matrix."""
+
+    for kind in COLLECTION_KINDS:
+        element = _element_type(category, kind)
+
+        if element is not None:
+            return kind, element
+
+    return None
+
+
+def _scalar_rule(op, left, right):
+    """The rule for two element categories, with a callable result
+    category already resolved. Recurses through resolve_binary() so a
+    nested array{array{int}} lifts one layer at a time; each step
+    strips a collection layer, so this terminates.
+    """
+
+    rule = resolve_binary(op, left, right)
+
+    if rule is None:
+        return None
+
+    result, impl = rule
+    return _as_type(result if isinstance(result, str) else result(left, right)), impl
+
+
+def _pairs(left, right, describe, describe_right=None):
+    """Zip two operands element-wise, broadcasting whichever side is a
+    scalar. Length/shape agreement is a *runtime* check: a collection's
+    length isn't part of its type, so the checker can't see it.
+
+    describe_right defaults to describe, for the common case where both
+    sides are rendered the same way; pass it separately when the two
+    sides need different context (e.g. each matrix's own column count).
+    """
+
+    describe_right = describe if describe_right is None else describe_right
+    left_items = left if isinstance(left, tuple) else None
+    right_items = right if isinstance(right, tuple) else None
+
+    if left_items is not None and right_items is not None:
+        if len(left_items) != len(right_items):
+            raise ExpressionError(
+                f"Cannot combine {describe(len(left_items))} "
+                f"with {describe_right(len(right_items))}."
+            )
+
+        return zip(left_items, right_items)
+
+    if left_items is not None:
+        return ((item, right) for item in left_items)
+
+    return ((left, item) for item in right_items)
+
+
+def _lift_array(impl, element_type):
+    def apply(left, right):
+        left_values = left.values if isinstance(left, Array) else left
+        right_values = right.values if isinstance(right, Array) else right
+
+        return Array(
+            values=tuple(
+                impl(a, b)
+                for a, b in _pairs(
+                    left_values,
+                    right_values,
+                    lambda size: f"an array of length {size}",
+                )
+            ),
+            element_type=element_type,
+        )
+
+    return apply
+
+
+def _lift_matrix(impl, element_type):
+    def apply(left, right):
+        left_rows = left.rows if isinstance(left, Matrix) else left
+        right_rows = right.rows if isinstance(right, Matrix) else right
+
+        def left_shape(size):
+            columns = left.shape[1] if isinstance(left, Matrix) else right.shape[1]
+            return f"a {size}x{columns} matrix"
+
+        def right_shape(size):
+            columns = right.shape[1] if isinstance(right, Matrix) else left.shape[1]
+            return f"a {size}x{columns} matrix"
+
+        rows = tuple(
+            tuple(
+                impl(a, b)
+                for a, b in _pairs(
+                    left_row,
+                    right_row,
+                    lambda size: f"a matrix row of {size} columns",
+                )
+            )
+            for left_row, right_row in _pairs(left_rows, right_rows, left_shape, right_shape)
+        )
+
+        return Matrix(element_type=element_type, rows=rows)
+
+    return apply
+
+
+_LIFTS = {"array": _lift_array, "matrix": _lift_matrix}
+
+
+def _lift_binary(op, left, right):
+    if op not in ELEMENTWISE_BINARY_OPS:
+        return None
+
+    left_collection = _collection(left)
+    right_collection = _collection(right)
+
+    if left_collection is None and right_collection is None:
+        return None
+
+    # array + matrix has no defined meaning; a mixed pairing stays a
+    # type error rather than guessing a broadcast rule.
+    if (
+        left_collection is not None
+        and right_collection is not None
+        and left_collection[0] != right_collection[0]
+    ):
+        return None
+
+    kind = (left_collection or right_collection)[0]
+    element = _scalar_rule(
+        op,
+        left_collection[1] if left_collection else left,
+        right_collection[1] if right_collection else right,
+    )
+
+    if element is None:
+        return None
+
+    element_type, impl = element
+
+    return (
+        Type(kind, fields=((None, element_type),)),
+        _LIFTS[kind](impl, element_type),
     )
 
 
-register_binary("+", "array", "array", "array", array_add)
+def resolve_binary(op, left, right):
+    """The rule for (op, left, right): a directly registered one, or an
+    element-wise lift over arrays/matrices. None if undefined.
+
+    Called by both the type checker and the evaluator. Since it depends
+    only on categories, both walks resolve the same rule.
+    """
+
+    return BINARY_RULES.get((op, left, right)) or _lift_binary(op, left, right)
+
+
+def resolve_unary(op, category):
+    """The unary counterpart of resolve_binary(): -array(1, 2) negates
+    every element, if the element type has a unary rule.
+    """
+
+    rule = UNARY_RULES.get((op, category))
+
+    if rule is not None:
+        return rule
+
+    if op not in ELEMENTWISE_UNARY_OPS:
+        return None
+
+    collection = _collection(category)
+
+    if collection is None:
+        return None
+
+    kind, element = collection
+    element_rule = UNARY_RULES.get((op, element))
+
+    if element_rule is None:
+        return None
+
+    element_type, impl = _as_type(element_rule[0]), element_rule[1]
+
+    def apply(value):
+        if kind == "array":
+            return Array(
+                values=tuple(impl(item) for item in value.values),
+                element_type=element_type,
+            )
+
+        return Matrix(
+            element_type=element_type,
+            rows=tuple(tuple(impl(item) for item in row) for row in value.rows),
+        )
+
+    return Type(kind, fields=((None, element_type),)), apply
+
 
 # ---- Quantities (currency, tonnage, and future units) ------------
 
