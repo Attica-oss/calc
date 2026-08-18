@@ -1,32 +1,23 @@
+
+![calc logo](assets/calc-logo.png)
+
 # calc
+--------
+**calc** is a strongly typed expression language (DSL). It is designed for performing calculations on dates, durations, quantities (e.g. currencies),arrays and matrices and for manipulating tabular data.
 
-**calc** is a strongly typed expression language for calculations of dates, durations, quantities, and for manipulating tabular data.
+It combines the convenience of spreadsheet-style formulas with explicit types and predictable evaluation.
 
-It combines the convenience of spreadsheet-style formulas with explicit types and predictable evaluation. For monetary calculations,we avoid binary floating-point surprises by using `Decimal`, calendar arithmetic understands real months and leap years, and easy to use syntax for retrieving date/time fields and invalid type combinations fail explicitly instead of being silently coerced.
+Invalid type combinations fail explicitly instead of being silently coerced. 
 
-Examples:
+It is not ment for a replacement of Excel or Google Sheets, as it is slow and does not support all the features of these tools.
 
-```text
-calc> $450 * 2.4t
-$1,080.00  (currency)
+Key features are:
 
-calc> 2026-01-31 + 1mo
-2026-02-28  (date)
-
-calc> 2026-08-08::DAYNAME
-Saturday  (text)
-
-calc> 2026-08-08::EOMONTH
-2026-08-31  (date)
-
-calc> abs(3 + 4i)
-5  (decimal)
-```
 
 ## Highlights
 
 * **Strong typing** — integers, decimals, currency, percentages, quantities, dates, times, text, tables, arrays, matrices, and other values remain distinct.
-* **Exact decimal arithmetic** — money and quantities use `Decimal`, avoiding binary floating-point rounding surprises.
+* **Exact decimal arithmetic** — money and quantities use `Decimal`, avoiding binary floating-point rounding surprises. Float is illegal in calc.
 * **Static type checking** — invalid expressions fail before evaluation with errors pointing to the offending expression.
 * **Calendar-aware arithmetic** — months and years follow the calendar, including end-of-month clamping and leap years.
 * **Date and time intelligence** — extract calendar fields, names, ISO weeks, and date boundaries directly from temporal values.
@@ -35,6 +26,7 @@ calc> abs(3 + 4i)
 * **Arrays and matrices** — construct and inspect homogeneous collections using the same expression language.
 * **Composable expressions** — functions, casts, variables, table operations, and scalar expressions share one evaluation model.
 * **CLI and REPL** — evaluate expressions from scripts or work interactively.
+* **Marimo Notebook** — evaluate expressions interactively in a notebook environment.
 
 ---
 
@@ -58,6 +50,12 @@ Or evaluate an expression directly:
 
 ```sh
 uv run main.py '1 + 2'
+```
+
+Or run the Marimo Notebook:
+
+```sh
+uv run marimo run src/engine_extensions.py
 ```
 
 ---
@@ -232,8 +230,6 @@ calc> ans + 5
 85  (int)
 ```
 
-A line containing only `-` is REPL shorthand for `ans`.
-
 ---
 
 # Usage
@@ -318,7 +314,7 @@ calc> vars
 | Command           | Description                       |
 | ----------------- | --------------------------------- |
 | `let NAME = EXPR` | Bind a variable                   |
-| `-`               | Reuse the previous answer (`ans`) |
+| `ans`             | Reuse the previous answer (`ans`) |
 | `vars`            | List current variables            |
 | `clear`           | Clear the terminal                |
 | `reset`           | Clear variables, including `ans`  |
@@ -364,6 +360,7 @@ calc keeps values strongly typed throughout an expression.
 | `table`    | `table(...)`                     | Typed columnar table                   |
 | `array`    | `array(1, 2, 3)`                 | Homogeneous one-dimensional collection |
 | `matrix`   | `matrix(...)`                    | Homogeneous two-dimensional collection |
+| `column`   | `column()`        | A column from a table or and array with a header     |
 
 ---
 
@@ -372,7 +369,7 @@ calc keeps values strongly typed throughout an expression.
 ### Arithmetic
 
 ```text
-+   -   *   /   //   %   **
++   -   *   /   //   %   ^
 ```
 
 Standard precedence applies:
@@ -611,12 +608,6 @@ Infinity is available through either:
 infinity()
 ```
 
-or:
-
-```text
-∞
-```
-
 Examples:
 
 ```text
@@ -777,7 +768,7 @@ Use `days_between()` when you specifically want an integer number of days:
 
 ```text
 days_between(2026-01-01, 2026-02-01)
-# 31
+# 32
 ```
 
 Durations do not have a universal total ordering because calendar months do not have fixed lengths.
@@ -1007,10 +998,30 @@ Text supports comparisons:
 "b" > "a"
 ```
 
-Text arithmetic is intentionally not defined.
+Text arithmetic is intentionally not defined. However, we can use `concat()` to concatenate text values.
 
 Use explicit casts when combining textual representations with other types.
 
+We also have `left()`, `right()`, and `mid()` for extracting parts of text, and `at()` for extracting a single character by index.
+
+The Excel `TEXT()` function is available as `format()`. However the temporal formatting uses the chrono syntax.
+
+| %Y  | 4-digit year
+| %y  | 2-digit year
+| %m  | month number
+| %B  | full month name
+| %b  | abbreviated month name
+| %d  | day of month
+| %A  | full weekday
+| %a  | abbreviated weekday
+| %H  | hour, 24-hour
+| %I  | hour, 12-hour
+| %M  | minute
+| %S  | second
+| %f  | fractional seconds
+| %p  | AM/PM
+
+while the number formatting adopts the Excel versions.
 ---
 
 # Characters
@@ -1107,6 +1118,11 @@ This keeps missing-value handling explicit.
 | `pi()`               | π                                                   |
 | `e()`                | Euler's number                                      |
 | `infinity()`         | Positive infinity                                   |
+| `format(value, format)` | Format a text value according to the specified format  |
+| `left(text, n)`      | Return the leftmost `n` characters of `text`        |
+| `right(text, n)`     | Return the rightmost `n` characters of `text`       |
+| `mid(text, start, n)` | Return the `n` characters of `text` starting at `start` |
+
 
 ### `ceil()`
 
@@ -1162,6 +1178,13 @@ The division by zero is never evaluated.
 
 ---
 
+## Type function
+
+| Function                       | Description                            |
+| ------------------------------ | -------------------------------------- |
+| `type_of(value)`                  | Return the type of `value`             |
+---
+
 ## Temporal functions
 
 | Function                       | Description                            |
@@ -1170,12 +1193,12 @@ The division by zero is never evaluated.
 | `now()`                        | Current datetime, second precision     |
 | `time(hour, minute[, second])` | Construct a time                       |
 | `days_between(start, end)`     | Whole number of days between two dates |
-| `startofmonth(value)`          | First day of the month                 |
-| `endofmonth(value)`            | Last day of the month                  |
-| `startofquarter(value)`        | First day of the quarter               |
-| `endofquarter(value)`          | Last day of the quarter                |
-| `startofyear(value)`           | First day of the year                  |
-| `endofyear(value)`             | Last day of the year                   |
+| `somonth(value)`          | First day of the month                 |
+| `eomonth(value)`            | Last day of the month                  |
+| `soquarter(value)`        | First day of the quarter               |
+| `eoquarter(value)`          | Last day of the quarter                |
+| `soyear(value)`           | First day of the year                  |
+| `eoyear(value)`             | Last day of the year                   |
 
 ---
 
@@ -1184,32 +1207,32 @@ The division by zero is never evaluated.
 Date-boundary functions provide explicit calendar operations without implicit evaluation context.
 
 ```text
-startofmonth(2026-08-08)
+somonth(2026-08-08)
 # 2026-08-01
 
-endofmonth(2026-08-08)
+eomonth(2026-08-08)
 # 2026-08-31
 
-endofmonth(2024-02-15)
+eomonth(2024-02-15)
 # 2024-02-29
 
-startofquarter(2026-08-08)
+soquarter(2026-08-08)
 # 2026-07-01
 
-endofquarter(2026-08-08)
+eoquarter(2026-08-08)
 # 2026-09-30
 
-startofyear(2026-08-08)
+soyear(2026-08-08)
 # 2026-01-01
 
-endofyear(2026-08-08)
+eoyear(2026-08-08)
 # 2026-12-31
 ```
 
 When passed a datetime, the boundary functions return a datetime at midnight:
 
 ```text
-startofmonth(2026-08-08 14:30:00)
+somonth(2026-08-08 14:30:00)
 # 2026-08-01 00:00:00
 ```
 
@@ -1222,7 +1245,7 @@ sum(
     filter(
         t,
         and(
-            [date] >= startofyear(asof),
+            [date] >= soyear(asof),
             [date] <= asof
         )
     )::amount
@@ -1256,7 +1279,7 @@ table{vessel: text, amount: currency}
 ## Creating columns and tables
 
 Columns are constructed with `column()`:
-
+Note "vessel" is the header and "Njord", "Selkie" are the values.
 ```text
 column("vessel", "Njord", "Selkie")
 ```
@@ -1274,7 +1297,7 @@ All columns must contain the same number of rows.
 
 Column names become part of the table's static schema and therefore must be literal text.
 
-Column names are case-insensitive for lookup.
+Column names are case-sensitive for lookup.
 
 ---
 
@@ -1447,7 +1470,7 @@ min(array("b", "a", "c"))
 Get its size with:
 
 ```text
-length(array(1, 2, 3))
+len(array(1, 2, 3))
 # 3
 ```
 
