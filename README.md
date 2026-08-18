@@ -1,8 +1,8 @@
 
-![calc logo](assets/calc-logo.png)
+![calc logo](assets/calc_logo.png)
 
 # calc
---------
+-----
 **calc** is a strongly typed expression language (DSL). It is designed for performing calculations on dates, durations, quantities (e.g. currencies),arrays and matrices and for manipulating tabular data.
 
 It combines the convenience of spreadsheet-style formulas with explicit types and predictable evaluation.
