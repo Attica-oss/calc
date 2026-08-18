@@ -110,16 +110,11 @@ def format_table(value: Table) -> str:
         return "(empty table)"
 
     rows: list[list[str]] = [
-        [
-            format_result(value=value.columns[column][row])
-            for column in range(len(headers))
-        ]
+        [format_result(value=value.columns[column][row]) for column in range(len(headers))]
         for row in range(value.row_count)
     ]
     widths: list[int] = [
-        max(len(headers[i]), *(len(row[i]) for row in rows))
-        if rows
-        else len(headers[i])
+        max(len(headers[i]), *(len(row[i]) for row in rows)) if rows else len(headers[i])
         for i in range(len(headers))
     ]
 
@@ -127,9 +122,7 @@ def format_table(value: Table) -> str:
         " | ".join(headers[i].ljust(widths[i]) for i in range(len(headers))),
         "-+-".join("-" * widths[i] for i in range(len(headers))),
     ]
-    lines.extend(
-        " | ".join(row[i].ljust(widths[i]) for i in range(len(headers))) for row in rows
-    )
+    lines.extend(" | ".join(row[i].ljust(widths[i]) for i in range(len(headers))) for row in rows)
 
     return "\n".join(lines)
 
@@ -155,8 +148,8 @@ def format_matrix(value: Matrix) -> str:
     if not value.rows:
         return "(empty matrix)"
 
-    rows:list[list[str]] = [[format_result(value=cell) for cell in row] for row in value.rows]
-    width:int = max(len(cell) for row in rows for cell in row)
+    rows: list[list[str]] = [[format_result(value=cell) for cell in row] for row in value.rows]
+    width: int = max(len(cell) for row in rows for cell in row)
 
     return "\n".join(" | ".join(cell.rjust(width) for cell in row) for row in rows)
 
@@ -169,9 +162,7 @@ def format_result(value: Value) -> str:
 
     # bool is a subclass of int: check it first.
     if isinstance(value, bool):
-        return (
-            "TRUE" if value else "FALSE"
-        )
+        return "TRUE" if value else "FALSE"
 
     if isinstance(value, Blank):
         return "blank"  # Check if we can change to 'null'
