@@ -210,9 +210,7 @@ def bind_variables(definitions: list[str]) -> dict[str, Value]:
         name = name.strip()
 
         if not separator or not expression.strip():
-            raise typer.BadParameter(
-                f"--var expects NAME=EXPRESSION, got {definition!r}"
-            )
+            raise typer.BadParameter(f"--var expects NAME=EXPRESSION, got {definition!r}")
 
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
             raise typer.BadParameter(f"{name!r} is not a valid variable name")
@@ -245,8 +243,10 @@ def run_once(expression: str, variables: dict[str, Value], bare: bool) -> int:
 
 
 def run_repl(variables: dict[str, Value]) -> int:
-    """Run the interactive REPL loop (let-bindings, ans, vars/clear/reset/
-    exit) until the user quits; return the process exit code.
+    """Run the interactive REPL loop
+    (let-bindings, ans, vars/clear/reset/
+    exit) until the user quits;
+    return the process exit code.
     """
 
     try:
@@ -280,7 +280,7 @@ def run_repl(variables: dict[str, Value]) -> int:
         if not line:
             continue
 
-        if line in {"exit", "quit","q"}:
+        if line in {"exit", "quit", "q"}:
             return 0
 
         if line == "help":
@@ -298,9 +298,7 @@ def run_repl(variables: dict[str, Value]) -> int:
 
         if line == "vars":
             if not variables:
-                console.print(
-                    "(no variables bound — use: let NAME = EXPR)", style="calc.info"
-                )
+                console.print("(no variables bound — use: let NAME = EXPR)", style="calc.info")
             for name, value in sorted(variables.items()):
                 console.print(
                     f"  [calc.variable]{name}[/calc.variable] = "
@@ -385,11 +383,10 @@ def main(
     ] = None,
     bare: Annotated[
         bool,
-        typer.Option(
-            "--bare", help="print only the formatted value (no type), for scripting"
-        ),
+        typer.Option("--bare", help="print only the formatted value (no type), for scripting"),
     ] = False,
 ) -> None:
+    """Main entry point for the calculator REPL."""
     variables = bind_variables(var or [])
 
     if expression is not None:

@@ -10,7 +10,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal, InvalidOperation
-from hashlib import pbkdf2_hmac
 
 from .calendar_utils import (
     end_of_month,
@@ -1100,7 +1099,7 @@ def _format_number_text(value, format_text):
         )
     else:
         number = number.quantize(
-            Decimal("1"),
+            Decimal(1),
             rounding=ROUND_HALF_UP,
         )
 
@@ -1324,7 +1323,6 @@ def _iter_values(value):
     yield value
 
 
-#
 def _is_text_collection(category):
     if category in {"text", "blank"}:
         return True

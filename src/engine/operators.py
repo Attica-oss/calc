@@ -7,7 +7,6 @@ special-casing required at the call site.
 """
 
 from collections.abc import Callable
-from datetime import timedelta
 from decimal import (
     Decimal,
     DivisionByZero,
