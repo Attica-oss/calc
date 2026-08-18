@@ -42,11 +42,11 @@ import { tags } from "https://esm.sh/@lezer/highlight@1";
 // FUNCTIONS registry in src/engine/functions.py.
 const FUNCTIONS = new Set([
   "abs", "and", "array", "at", "avg", "blank", "ceil", "coalesce", "colcount",
-  "column", "conj", "dayname", "days_between", "e", "endofmonth",
-  "endofquarter", "endofyear", "extend", "filter", "groupby", "if", "im",
-  "infinity", "isblank", "length", "matrix", "max", "min", "not", "now", "or",
-  "pi", "re", "round", "rowcount", "select", "sort", "startofmonth",
-  "startofquarter", "startofyear", "sum", "table", "time", "today",
+  "column", "conj", "dayname", "days_between", "e", "eomonth", "eoquarter", "eoyear",
+  "extend", "filter", "format","groupby", "if", "im",
+  "infinity", "isblank", "left", "len", "matrix", "max", "min", "mid", "not", "now", "or",
+  "pi", "re", "right", "round", "rowcount", "select", "sort", "somonth", "soquarter", "soyear",
+  "sum", "table", "time", "today", "type_of"
 ]);
 
 // Arity 0,0 in the same registry. They still require call syntax — pi() not

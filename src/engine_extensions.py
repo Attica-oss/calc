@@ -268,6 +268,12 @@ def _(expr_input, variables):
 
 @app.cell
 def _():
+    "test"[2]
+    return
+
+
+@app.cell
+def _():
     return
 
 

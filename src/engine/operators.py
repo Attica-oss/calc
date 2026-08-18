@@ -7,6 +7,7 @@ special-casing required at the call site.
 """
 
 from collections.abc import Callable
+from datetime import timedelta
 from decimal import (
     Decimal,
     DivisionByZero,
@@ -23,6 +24,7 @@ from .calendar_utils import (
 )
 from .values import (
     Array,
+    Column,
     Complex,
     Duration,
     ExpressionError,
@@ -43,7 +45,9 @@ type _UnaryKey = tuple[str, str]
 # for a rule whose result category depends on the operand categories
 # (e.g. int + int -> int but int + decimal -> decimal), a callable
 # (left_category, right_category) -> category.
-type _BinaryRule = tuple[str | Callable[[str, str], str], Callable[[Value, Value], Value]]
+type _BinaryRule = tuple[
+    str | Callable[[str, str], str], Callable[[Value, Value], Value]
+]
 type _UnaryRule = tuple[str, Callable[[Value], Value]]
 
 BINARY_RULES: dict[_BinaryKey, _BinaryRule] = {}
@@ -158,7 +162,9 @@ def numeric_divide(a, b):
     try:
         return left / right
     except InvalidOperation as error:
-        raise ExpressionError("The division produced an indeterminate result.") from error
+        raise ExpressionError(
+            "The division produced an indeterminate result."
+        ) from error
 
 
 def numeric_floordiv(a, b):
@@ -270,7 +276,13 @@ register_binary(
 # Consistency fix: every temporal difference is now a duration.
 # (date - date used to return a bare int; days_between() covers
 # the "give me a number" case.)
-register_binary("-", "date", "date", "duration", lambda a, b: Duration(days=(a - b).days))
+register_binary(
+    "-",
+    "date",
+    "date",
+    "duration",
+    lambda a, b: duration_add(Duration(days=(a - b).days), Duration(days=1)),
+)
 register_binary(
     "-",
     "datetime",
@@ -320,7 +332,7 @@ register_binary("/", "duration", "int", "duration", duration_divide)
 ELEMENTWISE_BINARY_OPS = frozenset({"+", "-", "*", "/", "//", "%", "**"})
 ELEMENTWISE_UNARY_OPS = frozenset({"+", "-"})
 
-COLLECTION_KINDS = ("array", "matrix")
+COLLECTION_KINDS = ("array", "matrix", "column")
 
 
 def _as_type(category) -> Type:
@@ -345,6 +357,22 @@ def _element_type(category, kind: str) -> Type | None:
         return None
 
     return _as_type(fields[0][1])
+
+
+def _column_type(category) -> tuple[str, Type] | None:
+    if not isinstance(category, Type) or not str.__eq__(category, "column"):
+        return None
+
+    fields = category.fields
+
+    if not fields or len(fields) != 1:
+        return None
+
+    name, element_type = fields[0]
+    if name is None:
+        return None
+
+    return name, _as_type(element_type)
 
 
 def _collection(category) -> tuple[str, Type] | None:
@@ -424,6 +452,57 @@ def _lift_array(impl, element_type):
     return apply
 
 
+def _lift_binary_column(
+    op,
+    left,
+    right,
+    left_column,
+    right_column,
+):
+    left_element = left_column[1] if left_column else left
+    right_element = right_column[1] if right_column else right
+
+    element = _scalar_rule(
+        op,
+        left_element,
+        right_element,
+    )
+
+    if element is None:
+        return None
+
+    element_type, impl = element
+
+    def apply(left_value, right_value):
+        left_values = (
+            left_value.values if isinstance(left_value, Column) else left_value
+        )
+        right_values = (
+            right_value.values if isinstance(right_value, Column) else right_value
+        )
+
+        values = tuple(
+            impl(a, b)
+            for a, b in _pairs(
+                left_values,
+                right_values,
+                lambda size: f"a column of length {size}",
+            )
+        )
+
+        return Column(
+            # choose your naming semantics
+            name=None,
+            values=values,
+            element_type=element_type,
+        )
+
+    return (
+        Type("column", fields=((None, element_type),)),
+        apply,
+    )
+
+
 def _lift_matrix(impl, element_type):
     def apply(left, right):
         left_rows = left.rows if isinstance(left, Matrix) else left
@@ -446,7 +525,9 @@ def _lift_matrix(impl, element_type):
                     lambda size: f"a matrix row of {size} columns",
                 )
             )
-            for left_row, right_row in _pairs(left_rows, right_rows, left_shape, right_shape)
+            for left_row, right_row in _pairs(
+                left_rows, right_rows, left_shape, right_shape
+            )
         )
 
         return Matrix(element_type=element_type, rows=rows)
@@ -460,6 +541,18 @@ _LIFTS = {"array": _lift_array, "matrix": _lift_matrix}
 def _lift_binary(op, left, right):
     if op not in ELEMENTWISE_BINARY_OPS:
         return None
+
+    left_column = _column_type(left)
+    right_column = _column_type(right)
+
+    if left_column is not None or right_column is not None:
+        return _lift_binary_column(
+            op,
+            left,
+            right,
+            left_column,
+            right_column,
+        )
 
     left_collection = _collection(left)
     right_collection = _collection(right)

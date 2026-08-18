@@ -5,10 +5,11 @@ arguments (lazy), its static result type, and its implementation.
 UDFs later become entries added to a copy of this registry.
 """
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
-from decimal import ROUND_CEILING, Decimal, InvalidOperation
+from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal, InvalidOperation
 
 from .calendar_utils import (
     end_of_month,
@@ -167,7 +168,9 @@ def _abs_impl(values):
             if value.months <= 0 and value.days <= 0 and value.seconds <= 0:
                 return negate_duration(value)
 
-            raise ExpressionError("abs() cannot normalize a mixed positive and negative duration.")
+            raise ExpressionError(
+                "abs() cannot normalize a mixed positive and negative duration."
+            )
 
         return value
 
@@ -254,7 +257,11 @@ def _min_max_result(name):
             )
 
         if all(category in NUMERIC_CATEGORIES for category in categories):
-            return "int" if all(category == "int" for category in categories) else "decimal"
+            return (
+                "int"
+                if all(category == "int" for category in categories)
+                else "decimal"
+            )
 
         first = categories[0]
 
@@ -286,7 +293,9 @@ def _min_max_impl(chooser):
 
         # Static type says decimal whenever the arguments mix int
         # and decimal, so keep the runtime value consistent.
-        if isinstance(result, int) and any(isinstance(value, Decimal) for value in values):
+        if isinstance(result, int) and any(
+            isinstance(value, Decimal) for value in values
+        ):
             return Decimal(result)
 
         return result
@@ -467,7 +476,9 @@ def _ceil_number(x, multiple):
         raise ExpressionError("ceil()'s multiple must be positive.")
 
     quotient = _guard_indeterminate(
-        lambda: (to_decimal(x) / multiple_decimal).to_integral_value(rounding=ROUND_CEILING)
+        lambda: (to_decimal(x) / multiple_decimal).to_integral_value(
+            rounding=ROUND_CEILING
+        )
     )
     result = quotient * multiple_decimal
 
@@ -861,7 +872,7 @@ def _colcount_impl(values):
 
 def _length_result(categories, node):
     if not _is_type(categories[0], "array"):
-        _fail(node, "length() requires an array.")
+        _fail(node, "len() requires an array.")
 
     return "int"
 
@@ -870,8 +881,20 @@ def _length_impl(values):
     return len(values[0].values)
 
 
+# ---- at()-----
+
+
 def _at_result(categories, node):
     base = categories[0]
+
+    if _is_type(base, "text"):
+        if len(categories) != 2:
+            _fail(node, "at() on text takes exactly one index.")
+
+        if categories[1] != "int":
+            _fail(node, "at()'s index must be a whole number.")
+
+        return "text"
 
     if _is_type(base, "array"):
         if len(categories) != 2:
@@ -897,26 +920,482 @@ def _at_result(categories, node):
 def _at_impl(values):
     base = values[0]
 
+    if isinstance(base, str):
+        (index,) = values[1:]
+        if not 0 <= index <= len(base):
+            raise ExpressionError(
+                f"Index {index} is out of range for text of length "
+                f"{len(base)} (at() is 0-indexed)."
+            )
+        return base[index]
+
     if isinstance(base, Array):
         (index,) = values[1:]
 
-        if not 1 <= index <= len(base.values):
+        if not 0 <= index <= len(base.values):
             raise ExpressionError(
                 f"Index {index} is out of range for an array of length "
-                f"{len(base.values)} (at() is 1-indexed)."
+                f"{len(base.values)} (at() is 0-indexed)."
             )
 
-        return base.values[index - 1]
+        return base.values[index]
 
     row, col = values[1:]
     rows, cols = base.shape
 
-    if not 1 <= row <= rows or not 1 <= col <= cols:
+    if not 0 <= row <= rows or not 0 <= col <= cols:
         raise ExpressionError(
-            f"Index ({row}, {col}) is out of range for a {rows}x{cols} matrix (at() is 1-indexed)."
+            f"Index ({row}, {col}) is out of range for a {rows}x{cols} matrix (at() is 0-indexed)."
         )
 
-    return base.rows[row - 1][col - 1]
+    return base.rows[row][col]
+
+
+# ---- text()-----
+#
+_TEXT_FORMATTABLE = {
+    "int",
+    "decimal",
+    "percent",
+    "currency",
+    "tonnage",
+    "date",
+    "time",
+    "datetime",
+    "duration",
+}
+
+
+# ------------------------------------------------------------------------
+## FORMATTERS
+#### Formatting chrono values (date, time, datetime, duration)
+# %Y  4-digit year
+# %y  2-digit year
+#
+# %m  month number
+# %B  full month name
+# %b  abbreviated month name
+#
+# %d  day of month
+# %A  full weekday
+# %a  abbreviated weekday
+#
+# %H  hour, 24-hour
+# %I  hour, 12-hour
+# %M  minute
+# %S  second
+# %f  fractional seconds
+# %p  AM/PM
+#
+def _format_chrono(value, format_text):
+    try:
+        return value.strftime(format_text)
+    except (ValueError, TypeError) as exc:
+        raise ExpressionError(f"Invalid date/time format {format_text!r}.") from exc
+
+
+# - Number Formatting-----
+# 0    required digit
+# #    optional digit
+# ,    thousands separator
+# .    decimal separator
+# %    multiply by 100 and append %
+#
+#
+
+
+@dataclass(frozen=True)
+class NumberFormat:
+    prefix: str
+    suffix: str
+
+    min_integer_digits: int
+    min_fraction_digits: int
+    max_fraction_digits: int
+
+    grouping: bool
+    percent: bool
+
+
+_NUMBER_FORMAT_RE = re.compile(
+    r"""
+    ^
+    (?P<prefix>.*?)
+    (?P<number>
+        [#,0]+
+        (?:\.[#0]+)?
+        %?
+    )
+    (?P<suffix>.*)
+    $
+    """,
+    re.VERBOSE,
+)
+
+
+def _parse_number_format(format_text):
+    match = _NUMBER_FORMAT_RE.fullmatch(format_text)
+
+    if match is None:
+        raise ExpressionError(f"Invalid number format {format_text!r}.")
+
+    number = match.group("number")
+
+    percent = number.endswith("%")
+    if percent:
+        number = number[:-1]
+
+    if "." in number:
+        integer_pattern, fraction_pattern = number.split(".", 1)
+    else:
+        integer_pattern = number
+        fraction_pattern = ""
+
+    grouping = "," in integer_pattern
+    integer_pattern = integer_pattern.replace(",", "")
+
+    if not integer_pattern:
+        raise ExpressionError(f"Invalid number format {format_text!r}.")
+
+    return NumberFormat(
+        prefix=match.group("prefix"),
+        suffix=match.group("suffix"),
+        min_integer_digits=integer_pattern.count("0"),
+        min_fraction_digits=fraction_pattern.count("0"),
+        max_fraction_digits=len(fraction_pattern),
+        grouping=grouping,
+        percent=percent,
+    )
+
+
+def _format_number_text(value, format_text):
+    spec = _parse_number_format(format_text)
+
+    number = Decimal(value)
+
+    if spec.percent:
+        number *= Decimal(100)
+
+    negative = number < 0
+    number = abs(number)
+
+    if spec.max_fraction_digits:
+        quantum = Decimal(1).scaleb(-spec.max_fraction_digits)
+
+        number = number.quantize(
+            quantum,
+            rounding=ROUND_HALF_UP,
+        )
+    else:
+        number = number.quantize(
+            Decimal("1"),
+            rounding=ROUND_HALF_UP,
+        )
+
+    raw = format(number, "f")
+
+    if "." in raw:
+        integer, fraction = raw.split(".", 1)
+    else:
+        integer, fraction = raw, ""
+
+    integer = integer.zfill(spec.min_integer_digits)
+
+    if spec.grouping:
+        integer = f"{int(integer):,}"
+
+        # Restore leading zeros required by the format.
+        digits = integer.replace(",", "")
+        if len(digits) < spec.min_integer_digits:
+            digits = digits.zfill(spec.min_integer_digits)
+            integer = f"{int(digits):,}"
+
+    # # means optional trailing fractional digits.
+    while len(fraction) > spec.min_fraction_digits and fraction.endswith("0"):
+        fraction = fraction[:-1]
+
+    result = integer
+
+    if fraction:
+        result += "." + fraction
+
+    if negative:
+        result = "-" + result
+
+    if spec.percent:
+        result += "%"
+
+    return spec.prefix + result + spec.suffix
+
+
+def _format_quantity_text(
+    value,
+    format_text,
+    category,
+):
+    return _format_number_text(
+        value.value,
+        format_text,
+    )
+
+def _format_quantity_text(
+    value,
+    format_text,
+    category,
+):
+    number = value.value
+
+    return _format_number_text(
+        number,
+        format_text,
+    )
+
+
+def _format_duration(value, format_text):
+    seconds = abs(value.seconds)
+
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    fields = {
+        "months": value.months,
+        "days": value.days,
+        "hours": hours,
+        "minutes": minutes,
+        "seconds": seconds,
+    }
+
+    try:
+        return format_text.format(**fields)
+    except (KeyError, ValueError) as exc:
+        raise ExpressionError(
+            f"Invalid duration format {format_text!r}."
+        ) from exc
+
+def _text_result(categories, node):
+    value_category, format_category = categories
+
+    if format_category != "text":
+        _fail(
+            node,
+            "text()'s format must be text.",
+        )
+
+    if value_category not in _TEXT_FORMATTABLE:
+        _fail(node, f"text() cannot format {value_category}.")
+
+    return "text"
+
+
+def _text_impl(values):
+    value, format_text = values
+    category = category_of(value)
+
+    if category in {"date", "time", "datetime"}:
+        return _format_chrono(value, format_text)
+
+    if category == "duration":
+        return _format_duration(value, format_text)
+
+    if category in {"currency", "tonnage", "percent"}:
+        return _format_quantity_text(
+            value,
+            format_text,
+            category,
+        )
+
+    if category in {"int", "decimal"}:
+        return _format_number_text(
+            value,
+            format_text,
+        )
+
+    raise ExpressionError(f"text() cannot format {category}.")
+
+
+# ----- Left(), right()---------
+#
+#
+def _text_slice_result(name):
+    def resolve(categories, node):
+        if categories[0] != "text":
+            _fail(
+                node,
+                f"{name}() requires text as its first argument.",
+            )
+
+        if len(categories) == 2 and categories[1] != "int":
+            _fail(
+                node,
+                f"{name}()'s character count must be a whole number.",
+            )
+
+        return "text"
+
+    return resolve
+
+
+def _text_slice_args(values):
+    text = values[0]
+    count = values[1] if len(values) == 2 else 1
+
+    if count < 0:
+        raise ExpressionError("Character count cannot be negative.")
+
+    return text, count
+
+
+def _left_impl(values):
+    text, count = _text_slice_args(values)
+    return text[:count]
+
+
+def _right_impl(values):
+    text, count = _text_slice_args(values)
+
+    if count == 0:
+        return ""
+
+    return text[-count:]
+
+
+# --- mid()------
+#
+def _mid_result(categories, node):
+    if categories[0] != "text":
+        _fail(node, "mid() requires text as its first argument.")
+
+    if categories[1] != "int":
+        _fail(node, "mid()'s start index must be a whole number.")
+
+    if categories[2] != "int":
+        _fail(node, "mid()'s character count must be a whole number.")
+
+    return "text"
+
+
+def _mid_impl(values):
+    text, start, count = values
+
+    if start < 0:
+        raise ExpressionError("mid()'s start index cannot be negative.")
+
+    if count < 0:
+        raise ExpressionError("mid()'s character count cannot be negative.")
+
+    return text[start : start + count]
+
+# --- concat()-------------
+#
+#
+#
+#
+#
+def _iter_values(value):
+    if isinstance(value, Array):
+        for item in value.values:
+            yield from _iter_values(item)
+        return
+
+    if isinstance(value, Matrix):
+        for row in value.rows:
+            for item in row:
+                yield from _iter_values(item)
+        return
+
+    if isinstance(value, Column):
+        for item in value.values:
+            yield from _iter_values(item)
+        return
+
+    yield value
+
+
+
+
+
+#
+def _is_text_collection(category):
+    if category in {"text", "blank"}:
+        return True
+
+    collection = _collection(category)
+
+    if collection is not None:
+        _, element = collection
+        return element in {"text", "blank"}
+
+    column = _column_type(category)
+
+    if column is not None:
+        _, element = column
+        return element in {"text", "blank"}
+
+    return False
+
+
+
+def  _concat_result(categories,node):
+    if not categories:
+        _fail(node, "concat() requires at least one value.")
+
+    # TEXTJOIN mode:
+    #
+    # concat(delimiter,ignore_empty,value....)
+
+    join_mode = (
+        len(categories) >= 3
+        and categories[0] == "text"
+        and categories[1] == "boolean"
+    )
+
+    values = categories[2:] if join_mode else categories
+
+    for category in values:
+           if not _is_text_collection(category):
+               _fail(
+                   node,
+                   "concat() accepts text, blank, "
+                   "or collections of text."
+               )
+
+    return "text"
+
+def _concat_impl(values):
+    join_mode = (
+        len(values) >= 3
+        and isinstance(values[0], str)
+        and isinstance(values[1], bool)
+    )
+
+    if join_mode:
+        delimiter = values[0]
+        ignore_empty = values[1]
+        inputs = values[2:]
+    else:
+        delimiter = ""
+        ignore_empty = False
+        inputs = values
+
+    parts = []
+
+    for value in inputs:
+        for item in _iter_values(value):
+            if isinstance(item, Blank):
+                item = ""
+
+            if ignore_empty and item == "":
+                continue
+
+            parts.append(item)
+
+    return delimiter.join(parts)
+
+
+
+
+
+
 
 
 # ---- table verbs: filter / select / extend / sort / groupby ---------
@@ -975,7 +1454,9 @@ def _filter_impl(args, environment, evaluate, row_scope):
 def _select_result(categories, node):
     _require_table(node, categories[0], "select()")
 
-    by_lower = {name.lower(): (name, field_type) for name, field_type in categories[0].fields}
+    by_lower = {
+        name.lower(): (name, field_type) for name, field_type in categories[0].fields
+    }
     fields = []
     seen_lower = set()
 
@@ -1075,9 +1556,13 @@ def _sort_result(categories, node):
 
 def _sort_impl(args, environment, evaluate, row_scope):
     table = evaluate(args[0], environment, row_scope)
-    descending = len(args) == 3 and evaluate(args[2], environment, row_scope).lower() == "desc"
+    descending = (
+        len(args) == 3 and evaluate(args[2], environment, row_scope).lower() == "desc"
+    )
 
-    keys = [compare_key(evaluate(args[1], environment, row)) for row in _row_dicts(table)]
+    keys = [
+        compare_key(evaluate(args[1], environment, row)) for row in _row_dicts(table)
+    ]
     order = sorted(range(table.row_count), key=lambda i: keys[i], reverse=descending)
     columns = tuple(tuple(column[i] for i in order) for column in table.columns)
 
@@ -1117,7 +1602,9 @@ def _validate_agg(node, agg_fn, element_type):
         }:
             return
 
-        _fail(node, "avg() over a column requires a numeric, quantity, or complex column.")
+        _fail(
+            node, "avg() over a column requires a numeric, quantity, or complex column."
+        )
 
     # sum(): currency/tonnage/percent/duration/complex, same as
     # top-level sum(). min/max: anything orderable (dates, text, ...),
@@ -1133,7 +1620,9 @@ def _validate_agg(node, agg_fn, element_type):
 def _groupby_result(categories, node):
     _require_table(node, categories[0], "groupby()")
 
-    by_lower = {name.lower(): (name, field_type) for name, field_type in categories[0].fields}
+    by_lower = {
+        name.lower(): (name, field_type) for name, field_type in categories[0].fields
+    }
 
     def literal_str(index, what):
         arg_node = node.args[index]
@@ -1151,7 +1640,9 @@ def _groupby_result(categories, node):
         _fail(node, f"groupby(): {group_col!r} is not a column of this table.")
 
     if agg_fn not in _GROUPBY_AGG_FNS:
-        _fail(node, f"groupby()'s aggregate function must be one of {_GROUPBY_AGG_FNS}.")
+        _fail(
+            node, f"groupby()'s aggregate function must be one of {_GROUPBY_AGG_FNS}."
+        )
 
     group_name, group_type = by_lower[group_col.lower()]
 
@@ -1176,7 +1667,9 @@ def _groupby_result(categories, node):
 def _groupby_impl(values):
     table, group_col, agg_col, agg_fn = values
     names = [name for name, _ in table.schema]
-    group_index = next(i for i, name in enumerate(names) if name.lower() == group_col.lower())
+    group_index = next(
+        i for i, name in enumerate(names) if name.lower() == group_col.lower()
+    )
     group_field = table.schema[group_index]
 
     groups: dict[Value, list[int]] = {}
@@ -1188,7 +1681,9 @@ def _groupby_impl(values):
         result_field = ("count", Type("int"))
         agg_values = [len(rows) for rows in groups.values()]
     else:
-        agg_index = next(i for i, name in enumerate(names) if name.lower() == agg_col.lower())
+        agg_index = next(
+            i for i, name in enumerate(names) if name.lower() == agg_col.lower()
+        )
         element_type = table.schema[agg_index][1]
         result_field = (f"{agg_fn}_{agg_col}", _agg_result_label(agg_fn, element_type))
 
@@ -1210,6 +1705,21 @@ def _groupby_impl(values):
         columns=(tuple(groups.keys()), tuple(agg_values)),
     )
 
+
+# ---- type_of()-----------
+# Returns the type of a value or expression.
+#
+def _type_of_result(categories, node):
+    return "type"
+
+
+def _type_of_impl(values):
+    [value] = values
+    return str(category_of(value))
+
+
+# ---- REGISTER THE FUNCTIONS
+#
 
 FUNCTIONS: dict[str, FunctionSpec] = {
     # today() -> the current local date.
@@ -1241,7 +1751,9 @@ FUNCTIONS: dict[str, FunctionSpec] = {
     # e() -> 2.71828... (50 significant digits).
     "e": FunctionSpec("e", 0, 0, False, _fixed("decimal"), lambda values: E),
     # infinity() -> Decimal Infinity.
-    "infinity": FunctionSpec("infinity", 0, 0, False, _fixed("decimal"), lambda values: INFINITY),
+    "infinity": FunctionSpec(
+        "infinity", 0, 0, False, _fixed("decimal"), lambda values: INFINITY
+    ),
     # time(hour, minute[, second]) -> a clock time.
     "time": FunctionSpec("time", 2, 3, False, _time_result, _time_impl),
     # abs(x) -> the absolute value/magnitude of a number, duration,
@@ -1255,8 +1767,12 @@ FUNCTIONS: dict[str, FunctionSpec] = {
     "ceil": FunctionSpec("ceil", 2, 2, False, _ceil_result, _ceil_impl),
     # min(...) / max(...) -> the smallest/largest of the arguments, or
     # of a single column()/array() argument's elements.
-    "min": FunctionSpec("min", 1, None, False, _min_max_result("min"), _min_max_impl(min)),
-    "max": FunctionSpec("max", 1, None, False, _min_max_result("max"), _min_max_impl(max)),
+    "min": FunctionSpec(
+        "min", 1, None, False, _min_max_result("min"), _min_max_impl(min)
+    ),
+    "max": FunctionSpec(
+        "max", 1, None, False, _min_max_result("max"), _min_max_impl(max)
+    ),
     # sum(...) / avg(...) -> the total/average of the arguments, or of
     # a single column()/array() argument's elements.
     "sum": FunctionSpec("sum", 1, None, False, _sum_result, _sum_impl),
@@ -1268,7 +1784,9 @@ FUNCTIONS: dict[str, FunctionSpec] = {
     "conj": FunctionSpec("conj", 1, 1, False, _complex_only_result("conj"), _conj_impl),
     # blank() -> the missing-value marker. isblank(x) -> whether x is
     # blank (the one function that accepts any category).
-    "blank": FunctionSpec("blank", 0, 0, False, _fixed("blank"), lambda values: Blank()),
+    "blank": FunctionSpec(
+        "blank", 0, 0, False, _fixed("blank"), lambda values: Blank()
+    ),
     "isblank": FunctionSpec("isblank", 1, 1, False, _isblank_result, _isblank_impl),
     # coalesce(x, default) -> `default` if x is blank(), else x.
     "coalesce": FunctionSpec("coalesce", 2, 2, False, _coalesce_result, _coalesce_impl),
@@ -1294,12 +1812,12 @@ FUNCTIONS: dict[str, FunctionSpec] = {
     # startof.../endof... (month/quarter/year) -> the first/last day of
     # the period containing a date or datetime (datetime in, midnight
     # datetime out) — DAX's STARTOFMONTH/ENDOFMONTH/... vocabulary.
-    "startofmonth": _date_bound_spec("startofmonth", start_of_month),
-    "endofmonth": _date_bound_spec("endofmonth", end_of_month),
-    "startofquarter": _date_bound_spec("startofquarter", start_of_quarter),
-    "endofquarter": _date_bound_spec("endofquarter", end_of_quarter),
-    "startofyear": _date_bound_spec("startofyear", start_of_year),
-    "endofyear": _date_bound_spec("endofyear", end_of_year),
+    "somonth": _date_bound_spec("somonth", start_of_month),
+    "eomonth": _date_bound_spec("eomonth", end_of_month),
+    "soquarter": _date_bound_spec("soquarter", start_of_quarter),
+    "eoquarter": _date_bound_spec("eoquarter", end_of_quarter),
+    "soyear": _date_bound_spec("soyear", start_of_year),
+    "eoyear": _date_bound_spec("eoyear", end_of_year),
     # column(name, v1, v2, ...) -> a named, homogeneously typed column.
     # table(col1, col2, ...) -> a table built from same-length columns.
     "column": FunctionSpec("column", 2, None, False, _column_result, _column_impl),
@@ -1312,22 +1830,43 @@ FUNCTIONS: dict[str, FunctionSpec] = {
     # same-element-type array() rows.
     "array": FunctionSpec("array", 1, None, False, _array_result, _array_impl),
     "matrix": FunctionSpec("matrix", 1, None, False, _matrix_result, _matrix_impl),
-    # length(a) -> an array's element count.
-    "length": FunctionSpec("length", 1, 1, False, _length_result, _length_impl),
+    # len(a) -> an array's element count.
+    "len": FunctionSpec("len", 1, 1, False, _length_result, _length_impl),
     # at(a, i) / at(m, row, col) -> the 1-indexed element of an array,
     # or the (row, col) element of a matrix.
+    # Now supports text slicing: at(text, i) -> the i-th character of 'text'.
     "at": FunctionSpec("at", 2, 3, False, _at_result, _at_impl),
+    # left(text, count) -> the first 'count' characters of 'text'.
+    "left": FunctionSpec("left", 1, 2, False, _text_slice_result("left"), _left_impl),
+    # right(text, count) -> the last 'count' characters of 'text'.
+    "right": FunctionSpec(
+        "right", 1, 2, False, _text_slice_result("right"), _right_impl
+    ),
+    # mid(text, start, count) -> the 'count' characters of 'text' starting at 'start'.
+    "mid": FunctionSpec("mid", 2, 3, False, _mid_result, _mid_impl),
+    # format(number, format) -> the number formatted according to the given format string.
+    "format": FunctionSpec("format", 2, 2, False, _text_result, _text_impl),
+    # concat(delimiter, ignore_empty, value...) -> the values concatenated with the delimiter,
+    # with empty values ignored if ignore_empty is true.
+    "concat": FunctionSpec("concat", 1, None, False, _concat_result, _concat_impl),
+
     # filter(t, [row expr]) -> the rows of t where the row expression
     # is true.
-    "filter": FunctionSpec("filter", 2, 2, True, _filter_result, _filter_impl, row_scope_arg=1),
+    "filter": FunctionSpec(
+        "filter", 2, 2, True, _filter_result, _filter_impl, row_scope_arg=1
+    ),
     # select(t, "col1", "col2", ...) -> t narrowed to just those columns.
     "select": FunctionSpec("select", 2, None, False, _select_result, _select_impl),
     # extend(t, "new_col", [row expr]) -> t with an extra computed column.
-    "extend": FunctionSpec("extend", 3, 3, True, _extend_result, _extend_impl, row_scope_arg=2),
+    "extend": FunctionSpec(
+        "extend", 3, 3, True, _extend_result, _extend_impl, row_scope_arg=2
+    ),
     # sort(t, [row expr][, "asc"|"desc"]) -> t's rows reordered by the
     # row expression's value (ascending by default).
     "sort": FunctionSpec("sort", 2, 3, True, _sort_result, _sort_impl, row_scope_arg=1),
     # groupby(t, "group_col", "agg_col", "sum"|"avg"|"min"|"max"|"count")
     # -> one row per distinct group_col value, with the aggregate applied.
     "groupby": FunctionSpec("groupby", 4, 4, False, _groupby_result, _groupby_impl),
+    # type_of(v) -> the type of v as a string.
+    "type_of": FunctionSpec("type_of", 1, 1, False, _type_of_result, _type_of_impl),
 }
