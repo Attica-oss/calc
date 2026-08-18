@@ -88,7 +88,7 @@ TOKEN_RE: Pattern[str] = re.compile(
         (?:[eE][+-]?\d+)?
     )
     |
-    (?P<POWER>\^)
+    (?P<POWER>\^ )
     |
     (?P<DOUBLECOLON>::)
     |
