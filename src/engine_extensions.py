@@ -12,6 +12,7 @@ with app.setup:
 
     from engine import (
         ExpressionError,
+        Number,
         Quantity,
         Table,
         Type,
@@ -29,10 +30,11 @@ def _():
     # Calc Engine
     ---
     """)
+    return
 
 
 @app.function
-def to_calc_value(raw, *, currency: bool):
+def to_calc_value(raw:Number, *, currency: bool):
     """One polars cell -> one calc value. calc has no native float —
     every decimal is a Decimal — so floats convert via their repr
     string, never the raw float, to avoid binary-fraction drift
@@ -41,13 +43,13 @@ def to_calc_value(raw, *, currency: bool):
     """
 
     if currency:
-        return Quantity(to_decimal(str(raw)), Unit.CURRENCY)
+        return Quantity(to_decimal(raw), Unit.CURRENCY)
 
     if isinstance(raw, bool):
         return raw
 
     if isinstance(raw, float):
-        return to_decimal(str(raw))
+        return to_decimal(raw)
 
     return raw
 
@@ -116,6 +118,7 @@ def _():
 @app.cell
 def _(df):
     mo.ui.table(df) if df is not None else None
+    return
 
 
 @app.cell
@@ -155,7 +158,9 @@ def _(csv_upload, currency_input, sheet_name_input, sheet_url_input):
     else:
         try:
             if csv_upload.value:
-                df = pl.read_csv(io.BytesIO(csv_upload.value[0].contents), try_parse_dates=True)
+                df = pl.read_csv(
+                    io.BytesIO(csv_upload.value[0].contents), try_parse_dates=True
+                )
             else:
                 df = scan_google_sheet(sheet_name, url=sheet_url).collect()
 
@@ -165,7 +170,9 @@ def _(csv_upload, currency_input, sheet_name_input, sheet_url_input):
             df, variables = None, {}
         else:
             variables = {"data": data}
-            mo.output.replace(mo.md(f"Loaded `{source}` as `data` — e.g. `data::<column>`"))
+            mo.output.replace(
+                mo.md(f"Loaded `{source}` as `data` — e.g. `data::<column>`")
+            )
     return df, variables
 
 
@@ -184,7 +191,6 @@ def _():
     import traitlets
 
     _HERE = pathlib.Path(__file__).parent
-
 
     class CalcEditor(anywidget.AnyWidget):
         # Passing paths rather than strings opts into anywidget's hot reloading,
@@ -222,7 +228,9 @@ def render_value(value, category):
     if isinstance(value, Table):
         headers = [name for name, _ in value.schema]
         data = {
-            name: [format_result(value.columns[i][row]) for row in range(value.row_count)]
+            name: [
+                format_result(value.columns[i][row]) for row in range(value.row_count)
+            ]
             for i, name in enumerate(headers)
         }
         return mo.ui.table(
@@ -261,11 +269,7 @@ def process(expr, variables=None):
 @app.cell
 def _(expr_input, variables):
     process(expr=expr_input.value["code"], variables=variables)
-
-
-@app.cell
-def _():
-    "test"[2]
+    return
 
 
 @app.cell

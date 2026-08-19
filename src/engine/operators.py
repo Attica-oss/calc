@@ -166,17 +166,17 @@ def numeric_divide(a, b):
         ) from error
 
 
-def numeric_floordiv(a, b):
+def numeric_floordiv(a, b) -> int:
     _nonzero(b)
     return a // b
 
 
-def numeric_modulo(a, b):
+def numeric_modulo(a, b) -> Decimal:
     _nonzero(b)
     return a % b
 
 
-def numeric_power(base, exponent):
+def numeric_power(base, exponent) -> Decimal:
     if abs(exponent) > 100:
         raise ExpressionError("The exponent is too large.")
 
@@ -331,7 +331,7 @@ register_binary("/", "duration", "int", "duration", duration_divide)
 ELEMENTWISE_BINARY_OPS = frozenset({"+", "-", "*", "/", "//", "%", "**"})
 ELEMENTWISE_UNARY_OPS = frozenset({"+", "-"})
 
-COLLECTION_KINDS = ("array", "matrix", "column")
+COLLECTION_KINDS = ("array", "matrix")
 
 
 def _as_type(category) -> Type:
@@ -375,7 +375,7 @@ def _column_type(category) -> tuple[str, Type] | None:
 
 
 def _collection(category) -> tuple[str, Type] | None:
-    """(kind, element type) if `category` is an array or matrix."""
+    """Returns(kind, element type) if `category` is an array or matrix."""
 
     for kind in COLLECTION_KINDS:
         element = _element_type(category, kind)
@@ -413,6 +413,7 @@ def _pairs(left, right, describe, describe_right=None):
     """
 
     describe_right = describe if describe_right is None else describe_right
+
     left_items = left if isinstance(left, tuple) else None
     right_items = right if isinstance(right, tuple) else None
 
@@ -428,7 +429,10 @@ def _pairs(left, right, describe, describe_right=None):
     if left_items is not None:
         return ((item, right) for item in left_items)
 
-    return ((left, item) for item in right_items)
+    if right_items is not None:
+        return ((left, item) for item in right_items)
+
+    return iter(((left, right),))
 
 
 def _lift_array(impl, element_type):
@@ -472,6 +476,11 @@ def _lift_binary_column(
 
     element_type, impl = element
 
+    if left_column is not None:
+        result_name = left_column[0]
+    else:
+        result_name = right_column[0]
+
     def apply(left_value, right_value):
         left_values = (
             left_value.values if isinstance(left_value, Column) else left_value
@@ -490,14 +499,13 @@ def _lift_binary_column(
         )
 
         return Column(
-            # choose your naming semantics
-            name=None,
+            name=result_name,
             values=values,
             element_type=element_type,
         )
 
     return (
-        Type("column", fields=((None, element_type),)),
+        Type("column", fields=((result_name, element_type),)),
         apply,
     )
 
@@ -544,6 +552,15 @@ def _lift_binary(op, left, right):
     left_column = _column_type(left)
     right_column = _column_type(right)
 
+    left_collection = _collection(left)
+    right_collection = _collection(right)
+
+    # Don't implicitly mix columns with arrays/matrices.
+    if (left_column is not None and right_collection is not None) or (
+        right_column is not None and left_collection is not None
+    ):
+        return None
+
     if left_column is not None or right_column is not None:
         return _lift_binary_column(
             op,
@@ -553,8 +570,8 @@ def _lift_binary(op, left, right):
             right_column,
         )
 
-    left_collection = _collection(left)
-    right_collection = _collection(right)
+    # left_collection = _collection(left)
+    # right_collection = _collection(right)
 
     if left_collection is None and right_collection is None:
         return None
@@ -568,11 +585,22 @@ def _lift_binary(op, left, right):
     ):
         return None
 
-    kind = (left_collection or right_collection)[0]
+    if left_collection is not None:
+        kind = left_collection[0]
+    elif right_collection is not None:
+        kind = right_collection[0]
+    else:
+        # Already ruled out above, but this makes the narrowing
+        # completely explicit to the type checker.
+        return None
+
+    left_element = left_collection[1] if left_collection is not None else left
+    right_element = right_collection[1] if right_collection is not None else right
+
     element = _scalar_rule(
         op,
-        left_collection[1] if left_collection else left,
-        right_collection[1] if right_collection else right,
+        left_element,
+        right_element,
     )
 
     if element is None:
@@ -609,6 +637,33 @@ def resolve_unary(op, category):
 
     if op not in ELEMENTWISE_UNARY_OPS:
         return None
+
+    column = _column_type(category)
+
+    if column is not None:
+        name, element = column
+        element_rule = UNARY_RULES.get((op, element))
+
+        if element_rule is None:
+            return None
+
+        element_type = _as_type(element_rule[0])
+        impl = element_rule[1]
+
+        def apply(value):
+            return Column(
+                name=value.name,
+                values=tuple(impl(item) for item in value.values),
+                element_type=element_type,
+            )
+
+        return (
+            Type(
+                "column",
+                fields=((name, element_type),),
+            ),
+            apply,
+        )
 
     collection = _collection(category)
 
