@@ -100,6 +100,7 @@ register_cast("datetime", "datetime", "datetime", lambda v: v)
 
 
 def duration_seconds(v):
+    """Helper function to convert a duration to seconds."""
     return Decimal(v.days * 86400 + v.seconds)
 
 
