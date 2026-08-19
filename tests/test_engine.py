@@ -71,6 +71,23 @@ def assert_expression_error(
     return caught.value
 
 
+# Months
+#
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ("2026-01-31 + 1mo", date(2026, 2, 28)),
+        ("2026-02-28 + 1mo", date(2026, 3, 31)),
+        ("2026-01-31 + 2mo", date(2026, 3, 31)),
+        ("2026-03-31 + 1mo", date(2026, 4, 30)),
+        ("2026-04-30 + 1mo", date(2026, 5, 31)),
+        ("2026-01-15 + 1mo", date(2026, 2, 15)),
+    ],
+)
+def test_calendar_month_addition(expression, expected):
+    assert_eval(expression, expected, "date")
+
+
 # Numbers
 
 
@@ -205,7 +222,7 @@ def test_grow_by_is_deliberately_ambiguous_and_rejected():
 @pytest.mark.parametrize(
     ("expression", "expected_value", "expected_category"),
     [
-        ("2026-05-01 - 2026-04-28", Duration(days=3), "duration"),
+        ("2026-05-01 - 2026-04-28", Duration(days=4), "duration"),
         ("2026-01-31 + 1mo", date(2026, 2, 28), "date"),
         ("10:30 + 45min", time(11, 15), "time"),
         ("2026-01-05 14:30:00", datetime(2026, 1, 5, 14, 30), "datetime"),
@@ -411,7 +428,9 @@ def test_casts(expression, expected_value, expected_category):
 def test_percent_casts_are_true_inverses():
     five_percent = evaluate_expression("5::PERCENT").value
     assert five_percent == Quantity(Decimal("0.05"), Unit.PERCENT)
-    assert evaluate_expression("x::DECIMAL", {"x": five_percent}).value == Decimal("0.05")
+    assert evaluate_expression("x::DECIMAL", {"x": five_percent}).value == Decimal(
+        "0.05"
+    )
 
 
 @pytest.mark.parametrize(
@@ -580,7 +599,10 @@ def test_percent_text_cast_matches_numeric_percent_cast():
     # "5"::PERCENT should mean the same thing as 5::PERCENT ("5
     # percent"), not the raw ratio 5.0 — both round-trip through the
     # same registered decimal->percent implementation.
-    assert evaluate_expression('"5"::PERCENT').value == evaluate_expression("5::PERCENT").value
+    assert (
+        evaluate_expression('"5"::PERCENT').value
+        == evaluate_expression("5::PERCENT").value
+    )
 
 
 # Table and Column
@@ -609,7 +631,9 @@ def test_table_and_column_construction():
 def test_column_construction():
     result = evaluate_expression('column("qty", 1, 2, 3)')
     assert result.category == Type("column", fields=(("qty", Type("int")),))
-    assert result.value == Column(name="qty", values=(1, 2, 3), element_type=Type("int"))
+    assert result.value == Column(
+        name="qty", values=(1, 2, 3), element_type=Type("int")
+    )
 
 
 @pytest.mark.parametrize(
@@ -656,12 +680,22 @@ def test_table_field_access_and_rowcount():
 
 
 def test_aggregate_functions_over_a_column():
-    variables = {"t": evaluate_expression('table(column("qty", 3.4t, 2.1t, 4.4t))').value}
+    variables = {
+        "t": evaluate_expression('table(column("qty", 3.4t, 2.1t, 4.4t))').value
+    }
 
-    assert_eval("sum(t::qty)", Quantity(Decimal("9.9"), Unit.TONNAGE), "tonnage", variables)
-    assert_eval("avg(t::qty)", Quantity(Decimal("3.3"), Unit.TONNAGE), "tonnage", variables)
-    assert_eval("min(t::qty)", Quantity(Decimal("2.1"), Unit.TONNAGE), "tonnage", variables)
-    assert_eval("max(t::qty)", Quantity(Decimal("4.4"), Unit.TONNAGE), "tonnage", variables)
+    assert_eval(
+        "sum(t::qty)", Quantity(Decimal("9.9"), Unit.TONNAGE), "tonnage", variables
+    )
+    assert_eval(
+        "avg(t::qty)", Quantity(Decimal("3.3"), Unit.TONNAGE), "tonnage", variables
+    )
+    assert_eval(
+        "min(t::qty)", Quantity(Decimal("2.1"), Unit.TONNAGE), "tonnage", variables
+    )
+    assert_eval(
+        "max(t::qty)", Quantity(Decimal("4.4"), Unit.TONNAGE), "tonnage", variables
+    )
 
 
 def test_aggregate_functions_over_an_int_column_stay_int():
@@ -688,7 +722,9 @@ def _catch_report():
 
 
 def test_row_ref_outside_any_verb_is_an_error():
-    assert_expression_error("[qty] > 1", "can only be used inside filter()/extend()/sort()")
+    assert_expression_error(
+        "[qty] > 1", "can only be used inside filter()/extend()/sort()"
+    )
 
 
 def test_row_ref_unknown_column_is_an_error():
@@ -704,7 +740,9 @@ def test_row_ref_never_collides_with_a_same_named_outer_variable():
     # variable, not the row.
     t = _catch_report()
     outer_qty = Quantity(Decimal("2.5"), Unit.TONNAGE)
-    result = evaluate_expression("filter(t, [qty] > qty)", {"t": t, "qty": outer_qty}).value
+    result = evaluate_expression(
+        "filter(t, [qty] > qty)", {"t": t, "qty": outer_qty}
+    ).value
     assert result.columns[0] == ("Njord",)  # only the 3.4t row beats 2.5t
 
 
@@ -806,7 +844,9 @@ def test_groupby_sum_avg_min_max_count():
         "Selkie": Quantity(Decimal("2.100"), Unit.TONNAGE),
     }
 
-    counted = evaluate_expression('groupby(t, "vessel", "qty", "count")', variables).value
+    counted = evaluate_expression(
+        'groupby(t, "vessel", "qty", "count")', variables
+    ).value
     assert dict(zip(counted.columns[0], counted.columns[1])) == {
         "Njord": 2,
         "Selkie": 1,
@@ -817,9 +857,13 @@ def test_groupby_reuses_the_real_column_aggregation_path():
     # groupby()'s aggregate is FUNCTIONS[agg_fn].impl on a real Column
     # built via column() — the same path sum(t::qty) already exercises
     # — so an int column's sum stays "int", matching sum(t::col).
-    t = evaluate_expression('table(column("g", "a", "a", "b"), column("n", 1, 2, 3))').value
+    t = evaluate_expression(
+        'table(column("g", "a", "a", "b"), column("n", 1, 2, 3))'
+    ).value
     result = evaluate_expression('groupby(t, "g", "n", "sum")', {"t": t})
-    assert result.category == Type("table", fields=(("g", Type("text")), ("sum_n", Type("int"))))
+    assert result.category == Type(
+        "table", fields=(("g", Type("text")), ("sum_n", Type("int")))
+    )
 
 
 @pytest.mark.parametrize(
@@ -914,8 +958,8 @@ def test_char_formatting():
             Array(values=(1, 2, 3), element_type=Type("int")),
             Type("array", fields=((None, Type("int")),)),
         ),
-        ("length(array(1, 2, 3))", 3, "int"),
-        ("at(array(10, 20, 30), 2)", 20, "int"),
+        ("len(array(1, 2, 3))", 3, "int"),
+        ("at(array(10, 20, 30), 1)", 20, "int"),
         ("sum(array(1t, 2t, 3t))", Quantity(Decimal(6), Unit.TONNAGE), "tonnage"),
         ("avg(array(1, 2, 3))", Decimal(2), "decimal"),
         ('min(array("b", "a", "c"))', "a", "text"),
@@ -930,9 +974,10 @@ def test_array_expressions(expression, expected_value, expected_category):
     ("expression", "fragment"),
     [
         ("array(1, $2)", "same type"),
-        ("at(array(1, 2, 3), 0)", "out of range"),
+        ("at(array(1, 2, 3),-1)", "out of range"),
         ("at(array(1, 2, 3), 4)", "out of range"),
-        ("length(5)", "requires an array"),
+        ("at(array(1, 2, 3), 4.5)", "whole number"),
+        ("len(5)", "requires an array"),
     ],
 )
 def test_array_type_errors(expression, fragment):
@@ -947,7 +992,7 @@ def test_matrix_construction_and_access():
     assert matrix.shape == (2, 3)
     assert matrix.rows == ((1, 2, 3), (4, 5, 6))
 
-    assert evaluate_expression("at(matrix(array(1, 2), array(3, 4)), 2, 1)").value == 3
+    assert evaluate_expression("at(matrix(array(1, 2), array(3, 4)), 1, 0)").value == 3
     assert evaluate_expression("rowcount(matrix(array(1, 2), array(3, 4)))").value == 2
     assert evaluate_expression("colcount(matrix(array(1, 2), array(3, 4)))").value == 2
 
@@ -1042,15 +1087,15 @@ def test_dayname_type_errors():
 @pytest.mark.parametrize(
     ("expression", "expected_value", "expected_category"),
     [
-        ("startofmonth(2026-08-08)", date(2026, 8, 1), "date"),
-        ("endofmonth(2026-08-08)", date(2026, 8, 31), "date"),
-        ("endofmonth(2024-02-15)", date(2024, 2, 29), "date"),  # leap year
-        ("startofquarter(2026-08-08)", date(2026, 7, 1), "date"),
-        ("endofquarter(2026-08-08)", date(2026, 9, 30), "date"),
-        ("startofyear(2026-08-08)", date(2026, 1, 1), "date"),
-        ("endofyear(2026-08-08)", date(2026, 12, 31), "date"),
+        ("somonth(2026-08-08)", date(2026, 8, 1), "date"),
+        ("eomonth(2026-08-08)", date(2026, 8, 31), "date"),
+        ("eomonth(2024-02-15)", date(2024, 2, 29), "date"),  # leap year
+        ("soquarter(2026-08-08)", date(2026, 7, 1), "date"),
+        ("eoquarter(2026-08-08)", date(2026, 9, 30), "date"),
+        ("soyear(2026-08-08)", date(2026, 1, 1), "date"),
+        ("eoyear(2026-08-08)", date(2026, 12, 31), "date"),
         (
-            "startofmonth(2026-08-08 14:30:00)",
+            "somonth(2026-08-08 14:30:00)",
             datetime(2026, 8, 1),
             "datetime",
         ),
@@ -1068,7 +1113,7 @@ def test_time_intelligence_composes_into_a_ytd_total():
     asof = date(2026, 8, 8)
 
     result = evaluate_expression(
-        "sum(filter(t, and([date] >= startofyear(asof), [date] <= asof))::amount)",
+        "sum(filter(t, and([date] >= soyear(asof), [date] <= asof))::amount)",
         {"t": t, "asof": asof},
     )
     assert result.value == Quantity(Decimal(600), Unit.CURRENCY)

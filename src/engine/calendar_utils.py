@@ -7,7 +7,7 @@ from .values import Duration, ExpressionError
 
 
 def add_months(value: date, months: int) -> date:
-    """Add calendar months while keeping the date valid."""
+    """Add calendar months while keeping the date valid and preserving end-of-month semantics."""
 
     total_months = value.year * 12 + value.month - 1 + months
     year, zero_based_month = divmod(total_months, 12)
@@ -16,10 +16,24 @@ def add_months(value: date, months: int) -> date:
     if not 1 <= year <= 9999:
         raise ExpressionError("The resulting date is outside the valid range.")
 
-    final_day = min(
-        value.day,
-        calendar.monthrange(year, month)[1],
-    )
+    source_last_day = calendar.monthrange(
+           value.year,
+           value.month,
+       )[1]
+
+    target_last_day = calendar.monthrange(
+        year,
+        month,
+    )[1]
+
+    # End-of-month is sticky.
+    if value.day == source_last_day:
+        final_day = target_last_day
+    else:
+        final_day = min(
+            value.day,
+            target_last_day,
+        )
 
     return value.replace(
         year=year,
