@@ -15,6 +15,7 @@
     --calc-border: #ccd8d8;
     --calc-gutter: #94a6a6;
     --calc-focus: #47798c;
+    --calc-container: #00897b;
     --calc-comment: #2e7d32; /* Comments */
     --calc-quantity: #8a5a08; /* $450   2.4t   50%       */
     --calc-temporal: #1d4e89; /* 2026-01-31   10:30   1mo */
@@ -41,7 +42,7 @@
         --calc-border: #2c3a3a;
         --calc-gutter: #586969;
         --calc-focus: #7db4c1;
-
+        --calc-container: #4db6ac;
         --calc-comment: #2e7d32; /* Comments */
         --calc-quantity: #d9a441;
         --calc-temporal: #7fa8d9;

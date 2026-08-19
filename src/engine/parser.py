@@ -15,12 +15,32 @@ from .values import (
     INFINITY,
     Char,
     Complex,
+    ContainerNumber,
     Duration,
     ExpressionError,
     Quantity,
     Unit,
     Value,
 )
+
+
+def parse_container_literal(text: str, position: int) -> ContainerNumber:
+    """Parse an ISO container-number token into its composite value."""
+
+    text = text.upper()
+
+    try:
+        return ContainerNumber(
+            owner_code=text[:3],
+            equipment_category=text[3],
+            serial_number=text[4:10],
+            check_digit=int(text[10]),
+        )
+    except ExpressionError as error:
+        raise ExpressionError(
+            error.message,
+            position,
+        ) from error
 
 
 @dataclass(frozen=True)
@@ -161,7 +181,9 @@ def parse_string_literal(text: str, position: int) -> str:
 
         if character == "\\":
             if index + 1 >= len(body):
-                raise ExpressionError("Trailing backslash in a string literal.", position)
+                raise ExpressionError(
+                    "Trailing backslash in a string literal.", position
+                )
 
             escape = body[index + 1]
 
@@ -479,6 +501,14 @@ class Parser:
 
             return Literal(
                 value=int(token.value),
+                position=token.position,
+            )
+
+        if token.kind == "CONTAINER":
+            self.advance()
+
+            return Literal(
+                value=parse_container_literal(token.value, token.position),
                 position=token.position,
             )
 

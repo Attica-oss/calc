@@ -22,6 +22,7 @@ from src.engine import (
     Char,
     Column,
     Complex,
+    ContainerNumber,
     Duration,
     ExpressionError,
     Matrix,
@@ -1014,7 +1015,7 @@ def test_array_and_matrix_formatting():
     assert format_result(evaluate_expression("array(1, 2, 3)").value) == "[1, 2, 3]"
     assert (
         format_result(evaluate_expression("matrix(array(1, 2), array(3, 4))").value)
-        == "1 | 2\n3 | 4"
+        == "[1  2\n\n3  4]\nmatrix{int}"
     )
 
 
@@ -1248,3 +1249,55 @@ def test_regression_tonnage_formatting_does_not_crash():
 def test_regression_ceil_is_registered():
     """ceil() was once implemented but omitted from the function registry."""
     assert_eval("ceil(7, 5)", 10, "int")
+
+
+# Container numbers
+#
+def test_valid_container_literal():
+    result = evaluate_expression("BICU1234565")
+
+    assert result.value == ContainerNumber(
+        owner_code="BIC",
+        equipment_category="U",
+        serial_number="123456",
+        check_digit=5,
+    )
+    assert result.category == "container"
+
+
+def test_container_literal_is_canonicalized_to_uppercase():
+    result = evaluate_expression("bicu1234565")
+
+    assert str(result.value) == "BICU1234565"
+    assert result.category == "container"
+
+
+def test_invalid_container_check_digit():
+    with pytest.raises(
+        ExpressionError,
+        match=r"Invalid container check digit: expected 6, got 7",
+    ):
+        evaluate_expression("MSCU1234567")
+
+
+def test_iso6346_reference_example():
+    result = evaluate_expression("ZEPU0037255")
+
+    assert str(result.value) == "ZEPU0037255"
+    assert result.category == "container"
+
+
+def test_container_formatting():
+    result = evaluate_expression("BICU1234565")
+
+    assert format_result(result.value) == "BICU1234565"
+
+
+def test_container_formats_inside_array():
+    result = evaluate_expression(
+        "array(BICU1234565, ZEPU0037255)"
+    )
+
+    assert format_result(result.value) == (
+        "[BICU1234565, ZEPU0037255]"
+    )

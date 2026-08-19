@@ -49,6 +49,120 @@ def is_time_only(value) -> TypeGuard[time]:
     return isinstance(value, time)
 
 
+
+_ISO6346_LETTER_VALUES = {
+    "A": 10,
+    "B": 12,
+    "C": 13,
+    "D": 14,
+    "E": 15,
+    "F": 16,
+    "G": 17,
+    "H": 18,
+    "I": 19,
+    "J": 20,
+    "K": 21,
+    "L": 23,
+    "M": 24,
+    "N": 25,
+    "O": 26,
+    "P": 27,
+    "Q": 28,
+    "R": 29,
+    "S": 30,
+    "T": 31,
+    "U": 32,
+    "V": 34,
+    "W": 35,
+    "X": 36,
+    "Y": 37,
+    "Z": 38,
+}
+
+
+def _container_check_digit(code: str) -> int:
+    """Return the ISO 6346 check digit for the first 10 characters."""
+
+    total = 0
+
+    for position, character in enumerate(code):
+        if "0" <= character <= "9":
+            value = int(character)
+        else:
+            value = _ISO6346_LETTER_VALUES[character]
+
+        total += value * (2**position)
+
+    remainder = total % 11
+
+    return 0 if remainder == 10 else remainder
+
+
+
+
+@dataclass(frozen=True)
+class ContainerNumber:
+    """An ISO 6346 container identification number."""
+    owner_code: str
+    equipment_category: str
+    serial_number: str
+    check_digit: int
+
+    def __post_init__(self):
+        owner_code = self.owner_code.upper()
+        equipment_category = self.equipment_category.upper()
+
+        object.__setattr__(self, "owner_code", owner_code)
+        object.__setattr__(
+            self,
+            "equipment_category",
+            equipment_category,
+        )
+
+        if (
+            len(owner_code) != 3
+            or any(character not in _ISO6346_LETTER_VALUES for character in owner_code)
+        ):
+            raise ExpressionError(
+                "A container owner code must contain exactly three letters."
+            )
+
+        if equipment_category not in {"U", "J", "Z"}:
+            raise ExpressionError(
+                "A container equipment category must be U, J, or Z."
+            )
+
+        if (
+            len(self.serial_number) != 6
+            or not all("0" <= character <= "9" for character in self.serial_number)
+        ):
+            raise ExpressionError(
+                "A container serial number must contain exactly six digits."
+            )
+
+        if not 0 <= self.check_digit <= 9:
+            raise ExpressionError(
+                "A container check digit must be a single digit."
+            )
+
+        code = (
+            owner_code
+            + equipment_category
+            + self.serial_number
+        )
+
+        expected = _container_check_digit(code)
+
+        if self.check_digit != expected:
+            raise ExpressionError(
+                f"Invalid container check digit: "
+                f"expected {expected}, got {self.check_digit}."
+            )
+
+    def __str__(self) -> str:
+        return f"{self.owner_code}{self.equipment_category}{self.serial_number}{self.check_digit}"
+
+
 class Unit(Enum):
     """Units for quantities.
 
@@ -111,12 +225,15 @@ class Quantity:
             # here rather than left to leak as a raw traceback — e.g.
             # $5 * infinity() should fail with a clear message, not an
             # uncaught InvalidOperation three layers down.
-            raise ExpressionError(f"{label(self.unit.value)} can't be infinite.") from error
+            raise ExpressionError(
+                f"{label(self.unit.value)} can't be infinite."
+            ) from error
 
         object.__setattr__(self, "value", quantized)
 
     # def __add__(self, other):
     #     return Quantity(self.value + other.value, self.unit)
+
 
 @dataclass(frozen=True)
 class Complex:
@@ -182,7 +299,9 @@ class Type(str):
 
     fields: tuple[tuple[str | None, Type], ...] | None
 
-    def __new__(cls, name: str, fields: tuple[tuple[str | None, Type], ...] | None = None):
+    def __new__(
+        cls, name: str, fields: tuple[tuple[str | None, Type], ...] | None = None
+    ):
         self = str.__new__(cls, name)
         self.fields = fields
         return self
@@ -214,7 +333,9 @@ class Type(str):
             if len(self.fields) == 1 and self.fields[0][0] is None:
                 return f"{str.__str__(self)}{{{self.fields[0][1]}}}"
 
-            inner = ", ".join(f"{name}: {field_type}" for name, field_type in self.fields)
+            inner = ", ".join(
+                f"{name}: {field_type}" for name, field_type in self.fields
+            )
             return f"{str.__str__(self)}{{{inner}}}"
 
         return str.__str__(self)
@@ -307,6 +428,7 @@ type Value = (
     | Table
     | Array
     | Matrix
+    | ContainerNumber
 )
 
 
@@ -340,6 +462,9 @@ def category_of(value) -> Type:
 
     if isinstance(value, Complex):
         return Type("complex")
+
+    if isinstance(value, ContainerNumber):
+        return Type("container")
 
     if isinstance(value, Blank):
         return Type("blank")
@@ -380,6 +505,7 @@ CATEGORY_LABELS = {
     "blank": "a blank value",
     "text": "a text value",
     "char": "a character",
+    "container": "a container number",
 }
 
 

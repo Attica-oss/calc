@@ -25,9 +25,16 @@ class Token:
 # longer/more specific alternative always gets first refusal.
 TOKEN_RE: Pattern[str] = re.compile(
     r"""
-    (?P<SPACE>\s+)
+    (?P<COMMENT>
+           (?:
+               ^[ \t]*
+               |
+               (?<=;)[ \t]*
+           )
+           //[^\r\n]*
+       )
     |
-    (?P<COMMENT>^[ \t]*//[^\r\n]*)
+    (?P<SPACE>\s+)
     |
     (?P<DATETIME>
     \d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])
@@ -90,7 +97,7 @@ TOKEN_RE: Pattern[str] = re.compile(
         (?:[eE][+-]?\d+)?
     )
     |
-    (?P<POWER>\^ )
+    (?P<POWER>\^)
     |
     (?P<DOUBLECOLON>::)
     |
@@ -129,6 +136,8 @@ TOKEN_RE: Pattern[str] = re.compile(
     (?P<COMMA>,)
     |
     (?P<SEMICOLON>;)
+    |
+    (?P<CONTAINER>[A-Za-z]{3}[UuJjZz]\d{7}(?![A-Za-z0-9_]))
     |
     (?P<IDENTIFIER>[A-Za-z_][A-Za-z0-9_]*)
     """,

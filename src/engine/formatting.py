@@ -9,17 +9,24 @@ from .values import (
     Char,
     Column,
     Complex,
+    ContainerNumber,
     Duration,
     Matrix,
     Quantity,
     Table,
     Unit,
     Value,
+    category_of,
     is_date_only,
     is_datetime,
     is_time_only,
-    category_of
 )
+
+
+def format_container(value: ContainerNumber) -> str:
+    """Render an ISO 6346 container number in canonical form."""
+
+    return str(value)
 
 
 def format_duration(value: Duration) -> str:
@@ -146,41 +153,29 @@ def format_array(value: Array) -> str:
 
     return f"[{', '.join(format_result(value=v) for v in value.values)}]"
 
+
 def format_matrix(value: Matrix) -> str:
     """Render a Matrix as a bracketed text grid."""
 
     if not value.rows:
         return f"[]\n{category_of(value)}"
 
-    rows = [
-        [format_result(value=cell) for cell in row]
-        for row in value.rows
-    ]
+    rows = [[format_result(value=cell) for cell in row] for row in value.rows]
 
     column_count = len(rows[0])
 
-    widths = [
-        max(len(row[col]) for row in rows)
-        for col in range(column_count)
-    ]
+    widths = [max(len(row[col]) for row in rows) for col in range(column_count)]
 
     lines = []
 
     for row in rows:
-        line = "  ".join(
-            cell.rjust(widths[col])
-            for col, cell in enumerate(row)
-        )
+        line = "  ".join(cell.rjust(widths[col]) for col, cell in enumerate(row))
         lines.append(line)
 
     if len(lines) == 1:
         body = f"[{lines[0]}]"
     else:
-        body = (
-            f"[{lines[0]}\n"
-            + "\n".join(lines[1:-1])
-            + f"\n{lines[-1]}]"
-        )
+        body = f"[{lines[0]}\n" + "\n".join(lines[1:-1]) + f"\n{lines[-1]}]"
 
     return f"{body}\n{category_of(value)}"
 
@@ -225,6 +220,9 @@ def format_result(value: Value) -> str:
 
     if isinstance(value, Complex):
         return format_complex(value)
+
+    if isinstance(value, ContainerNumber):
+        return format_container(value)
 
     if isinstance(value, Column):
         return format_column(value)

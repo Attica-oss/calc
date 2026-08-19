@@ -144,6 +144,7 @@ const DOUBLECOLON = /^::/;
 const OPERATOR = /^(?:\^|\/\/|<=|>=|<>|[<>=+\-*/%])/;
 const BRACKET = /^[()[\]]/;
 const SEPARATOR = /^[,;]/;
+const CONTAINER = /^[A-Za-z]{3}[UuJjZz]\d{7}(?![A-Za-z0-9_])/;
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*/;
 
 // Mirrors parse_statement's 3-token lookahead. Bounded by the line, so a let
@@ -211,7 +212,7 @@ const calcParser = {
     }
 
     if (stream.match(SEPARATOR)) return "separator";
-
+    if (stream.match(CONTAINER)) return "container";
     if (stream.match(IDENTIFIER)) {
       const word = stream.current();
       const lower = word.toLowerCase();
@@ -269,6 +270,9 @@ const calcParser = {
     imaginary: tags.special(tags.number),
     // Text.
     string: tags.string,
+
+    // ISO 6346 container number.
+    container: tags.atom,
     // Comments.
     comment: tags.lineComment,
     // Names.
@@ -332,6 +336,12 @@ const calcHighlight = HighlightStyle.define([
 
   { tag: tags.string, color: "var(--calc-text)" },
 
+  // ISO 6346 container numbers.
+  {
+    tag: tags.atom,
+    color: "var(--calc-container)",
+    fontWeight: "600",
+  },
   // Names: ink.
   { tag: tags.variableName, color: "var(--calc-name)" },
   {
@@ -428,16 +438,16 @@ function render({ model, el }) {
     if (incoming === view.state.doc.toString()) return;
     applyingFromModel = true;
     try {
-       view.dispatch({
-         changes: {
-           from: 0,
-           to: view.state.doc.length,
-           insert: incoming,
-         },
-       });
-     } finally {
-       applyingFromModel = false;
-     }
+      view.dispatch({
+        changes: {
+          from: 0,
+          to: view.state.doc.length,
+          insert: incoming,
+        },
+      });
+    } finally {
+      applyingFromModel = false;
+    }
   }
 
   model.on("change:code", onCodeChange);
