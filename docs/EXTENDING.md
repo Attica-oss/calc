@@ -1,6 +1,6 @@
 # Extending the expression engine
 
-The engine has a small number of extension points:
+Calc's engine has a small number of extension points:
 
 ```text
 source
@@ -20,23 +20,99 @@ The most important invariant is:
 
 > **The type checker and evaluator must resolve the same operation and agree on its result type.**
 
-For operators and casts, both passes use shared dispatch tables. Collection arithmetic is derived from scalar arithmetic rather than registered independently.
+If the checker determines:
 
-That means most extensions should be declarative:
+```text
+X OP Y → Z
+```
 
-* new function → register a function
-* new operator behavior → register a scalar rule
+then evaluation must either:
+
+1. produce a runtime value whose category is `Z`, or
+2. raise an `ExpressionError`.
+
+It must not silently return a different kind of value.
+
+For operators and casts, both checking and evaluation use shared dispatch rules. Collection arithmetic derives its behavior from scalar arithmetic wherever collection lifting permits it.
+
+The general extension model is:
+
+* new function → add a `FunctionSpec`
+* new scalar operator behavior → register a binary or unary rule
 * new cast → register a cast rule
-* new collection behavior → usually nothing; scalar rules are lifted automatically
-* new value type → representation + category + operations + formatting
+* new scalar arithmetic behavior → arrays, matrices, and columns usually inherit it automatically
+* new runtime value → representation + category + semantics + formatting
+* new literal syntax → lexer + parser + value representation
 
-Avoid adding special cases directly to `check_types` or `evaluate_node` unless the language feature genuinely cannot be represented through one of these extension points.
+Avoid adding parallel special cases directly to `check_types` and `evaluate_node` unless the feature genuinely cannot be represented through the existing registries or resolvers.
+
+---
+
+# Result-type correctness
+
+This rule applies to every extension point.
+
+Suppose the checker resolves:
+
+```text
+decimal - decimal → decimal
+```
+
+The runtime implementation must not return:
+
+```text
+Blank()
+```
+
+or:
+
+```text
+int
+```
+
+because those values disagree with the result category promised by the checker.
+
+The same rule applies to:
+
+* functions
+* binary operators
+* unary operators
+* casts
+* array lifting
+* matrix lifting
+* column lifting
+
+A value-dependent operation may still fail at runtime.
+
+For example:
+
+```text
+1 / 0
+```
+
+is valid by category:
+
+```text
+int / int → decimal
+```
+
+but invalid for those particular values.
+
+That distinction should remain clear:
+
+```text
+unsupported categories
+    → type-check error
+
+supported categories + invalid runtime values
+    → runtime ExpressionError
+```
 
 ---
 
 # Adding a function
 
-Functions are described by `FunctionSpec`.
+Functions are represented by `FunctionSpec`.
 
 Conceptually:
 
@@ -58,7 +134,7 @@ The two important pieces are:
 result_type(categories, node)
 ```
 
-which runs during type checking, and:
+which runs during static type checking, and:
 
 ```text
 impl(values)
@@ -66,59 +142,48 @@ impl(values)
 
 which runs during evaluation.
 
-For lazy functions, `impl` instead receives the unevaluated argument nodes and an evaluation callback.
+For lazy functions, the implementation receives unevaluated argument nodes and an evaluation callback instead.
 
-## Prefer registration helpers
+---
 
-New functions should not normally modify the `FUNCTIONS` dictionary directly.
+## Current registration style
 
-Use a registration helper:
+At present, built-in functions are added to `FUNCTIONS` using `FunctionSpec`.
+
+For example:
 
 ```python
-def register_function(
-    name: str,
-    *,
-    args: int | tuple[int, int | None],
-    result,
-    lazy: bool = False,
-    row_scope_arg: int | None = None,
-):
-    if isinstance(args, int):
-        min_args = max_args = args
-    else:
-        min_args, max_args = args
-
-    def decorator(impl):
-        FUNCTIONS[name] = FunctionSpec(
-            name=name,
-            min_args=min_args,
-            max_args=max_args,
-            lazy=lazy,
-            result_type=result,
-            impl=impl,
-            row_scope_arg=row_scope_arg,
+def _example_result(categories, node):
+    if categories[0] != "decimal":
+        _fail(
+            node,
+            "example() requires a decimal.",
         )
-        return impl
 
-    return decorator
-```
+    return "decimal"
 
-Then an ordinary function becomes:
 
-```python
-@register_function(
-    "sqrt",
-    args=1,
-    result=_numeric_result,
-)
-def _sqrt(values):
+def _example_impl(values):
     [value] = values
-    return decimal_sqrt(value)
+    return value
+
+
+FUNCTIONS = {
+    ...
+    "example": FunctionSpec(
+        "example",
+        1,
+        1,
+        False,
+        _example_result,
+        _example_impl,
+    ),
+}
 ```
 
-There is no separate registry entry to remember.
+The argument count is enforced by `FunctionSpec`.
 
-That is deliberate: defining the function should register the function.
+The result resolver should therefore focus on type semantics rather than repeating arity validation.
 
 ---
 
@@ -126,126 +191,91 @@ That is deliberate: defining the function should register the function.
 
 Many functions always return the same category.
 
-Instead of writing a new result checker for each one:
+Calc already uses a reusable helper for this pattern:
 
 ```python
-def _today_result(categories, node):
-    if categories:
-        _fail(node, "today() takes no arguments.")
-
-    return "date"
+def _fixed(category):
+    return lambda categories, node: category
 ```
 
-use a reusable helper:
+A zero-argument function can therefore use:
 
 ```python
-def fixed_result(category):
-    def resolve(categories, node):
-        return category
-
-    return resolve
-```
-
-Then:
-
-```python
-@register_function(
+"today": FunctionSpec(
     "today",
-    args=0,
-    result=fixed_result("date"),
+    0,
+    0,
+    False,
+    _fixed("date"),
+    _today_impl,
 )
-def _today(values):
-    return date.today()
 ```
 
-The argument count is already enforced by `FunctionSpec`, so the result resolver only needs to determine the result type.
+There is no need to write a dedicated result resolver merely to return a constant category.
 
 ---
 
 ## Functions restricted to particular categories
 
-Most functions have simple input rules.
+When a function has simple type rules, keep the result resolver simple.
 
-Provide helpers for common cases:
-
-```python
-def accepts(*allowed, returns):
-    allowed = set(allowed)
-
-    def resolve(categories, node):
-        if any(category not in allowed for category in categories):
-            _fail(node, "Unsupported argument type.")
-
-        return returns
-
-    return resolve
-```
-
-For functions where the result type is the same as the input:
+For example:
 
 ```python
-def same_type(*allowed):
-    allowed = set(allowed)
+def _example_result(categories, node):
+    category = categories[0]
 
-    def resolve(categories, node):
-        [category] = categories
-
-        if category not in allowed:
-            _fail(node, "Unsupported argument type.")
-
-        return category
-
-    return resolve
-```
-
-Now something like `abs()` can be registered declaratively:
-
-```python
-@register_function(
-    "abs",
-    args=1,
-    result=same_type(
+    if category not in {
         "int",
         "decimal",
-        "currency",
-        "tonnage",
-        "duration",
-    ),
-)
-def _abs(values):
-    [value] = values
-    return abs_value(value)
+    }:
+        _fail(
+            node,
+            "example() requires a number.",
+        )
+
+    return category
 ```
 
-Keep a custom result resolver only when the function has genuinely custom type semantics.
+Do not force a generic helper onto a function whose semantics contain important exceptions.
+
+For example, `abs()` is not a pure same-type function:
+
+```text
+abs(int)      → int
+abs(decimal)  → decimal
+abs(currency) → currency
+abs(complex)  → decimal
+```
+
+The `complex → decimal` case means `abs()` deserves a custom resolver.
 
 ---
 
 ## Example: `ceil()`
 
-`ceil(x, multiple)` needs a custom resolver because its result depends on its arguments.
+`ceil(x, multiple)` needs a custom result resolver because its result depends on both arguments.
 
 ```python
 def _ceil_result(categories, node):
-    x, multiple = categories
+    x_category, multiple_category = categories
 
-    if x != multiple:
+    if x_category != multiple_category:
         _fail(
             node,
-            "ceil() requires x and multiple to have the same type.",
+            "ceil() requires x and multiple to be the same kind of value.",
         )
 
-    if x == "int":
-        return "int"
+    if x_category in {"int", "decimal"}:
+        return x_category
 
-    if x in {
-        "decimal",
+    if x_category in {
         "currency",
         "tonnage",
         "percent",
         "duration",
     }:
-        return x
+        return x_category
 
     _fail(
         node,
@@ -253,15 +283,10 @@ def _ceil_result(categories, node):
     )
 ```
 
-Registration is still one operation:
+Its implementation then only needs to choose the runtime operation:
 
 ```python
-@register_function(
-    "ceil",
-    args=2,
-    result=_ceil_result,
-)
-def _ceil(values):
+def _ceil_impl(values):
     x, multiple = values
 
     if isinstance(x, Duration):
@@ -275,140 +300,203 @@ def _ceil(values):
 
 The evaluator does not need to repeat the category validation.
 
-The checker already did that.
+The checker already performed it.
 
 ---
 
 # Lazy functions
 
-A function should be lazy only when evaluating every argument would change the semantics.
+A function should be lazy only when evaluating all arguments would change its semantics.
 
 `if()` is the canonical example:
 
 ```text
-if(x != 0, 1 / x, 0)
+if(x <> 0, 1 / x, 0)
 ```
 
-The unused branch must not be evaluated.
+When `x` is zero, the unused branch must not be evaluated.
 
-Register it explicitly as lazy:
+A lazy function receives the argument nodes rather than already evaluated values:
 
 ```python
-@register_function(
-    "if",
-    args=3,
-    result=_if_result,
-    lazy=True,
-)
-def _if(args, environment, evaluate, row_scope):
+def _if_impl(
+    args,
+    environment,
+    evaluate,
+    row_scope,
+):
     condition = evaluate(
         args[0],
         environment,
         row_scope,
     )
 
-    branch = args[1] if condition else args[2]
+    chosen = args[1] if condition else args[2]
 
     return evaluate(
-        branch,
+        chosen,
         environment,
         row_scope,
     )
 ```
 
-Do not make a function lazy merely as an optimization.
+Lazy evaluation is a language semantic.
 
-Lazy evaluation is part of the language semantics.
+Do not use it merely as a performance optimization.
 
 ---
 
 # Row-scoped functions
 
-Table functions such as:
+Some table functions evaluate one argument against the current row.
 
-```text
-filter(table, [qty] > 2t)
+For example:
+
+```calc
+filter(t, [qty] > 2t)
 ```
 
-evaluate one argument inside the schema of a table.
+The expression:
 
-Those functions use `row_scope_arg`.
+```text
+[qty]
+```
+
+is resolved using the schema of `t`.
+
+These functions use `row_scope_arg`.
 
 For example:
 
 ```python
-@register_function(
+"filter": FunctionSpec(
     "filter",
-    args=2,
-    result=_filter_result,
-    lazy=True,
+    2,
+    2,
+    True,
+    _filter_result,
+    _filter_impl,
     row_scope_arg=1,
 )
-def _filter(args, environment, evaluate, row_scope):
-    ...
 ```
 
-The checker uses the schema of argument `0` while checking argument `1`.
+The checker derives a row scope from argument `0` and uses it while checking argument `1`.
 
-Keep this mechanism limited to functions whose syntax actually contains a row expression.
+The evaluator performs the same operation once per table row.
+
+Keep `row_scope_arg` limited to arguments that genuinely contain row expressions.
 
 Functions such as:
 
-```text
-select(table, "name", "qty")
+```calc
+select(t, "name", "qty")
 ```
 
-do not need row scope if their column arguments are compile-time names rather than arbitrary expressions.
+do not need row scope when their column arguments are compile-time text names.
+
+---
+
+# Row values versus whole columns
+
+Calc deliberately distinguishes:
+
+```calc
+[unit_price]
+```
+
+from:
+
+```calc
+t::unit_price
+```
+
+Inside a row-scoped function:
+
+```text
+[unit_price]
+```
+
+means:
+
+> the current row's scalar value.
+
+Whereas:
+
+```text
+t::unit_price
+```
+
+means:
+
+> the entire `Column`.
+
+For example:
+
+```calc
+extend(
+    t,
+    "total",
+    [unit_price] * 10
+)
+```
+
+produces a scalar value for each row.
+
+Using:
+
+```calc
+extend(
+    t,
+    "total",
+    t::unit_price * 10
+)
+```
+
+produces a whole-column expression instead.
+
+Row-scoped functions should reject collection-valued row expressions where a scalar result is required.
 
 ---
 
 # Adding a constant
 
-Constants are zero-argument functions.
+Calc currently represents constants as zero-argument functions.
 
-Use a helper:
+Examples include:
 
-```python
-def register_constant(name, category, value):
-    @register_function(
-        name,
-        args=0,
-        result=fixed_result(category),
-    )
-    def constant(values):
-        return value
-
-    return constant
+```calc
+pi()
+e()
+infinity()
+today()
+now()
 ```
 
-Then:
+This avoids creating reserved bare identifiers.
 
-```python
-register_constant("pi", "decimal", PI)
-register_constant("e", "decimal", E)
+A user may therefore still write:
+
+```calc
+let pi = 3;
+
+pi
 ```
 
-This keeps constants in the same namespace and dispatch system as every other function.
+without conflicting with:
 
-Using:
-
-```text
+```calc
 pi()
 ```
 
-instead of a reserved identifier also means:
-
-```text
-let pi = 3
-```
-
-can remain legal without introducing special parser rules.
+Function names use lowercase call syntax.
 
 ---
 
 # Adding arithmetic
 
-Arithmetic is defined for scalar types first.
+Arithmetic is defined for scalar categories first.
+
+Example:
 
 ```python
 register_binary(
@@ -420,191 +508,23 @@ register_binary(
 )
 ```
 
-That registration means:
+That rule means:
 
 ```text
 time - time → duration
 ```
 
-Do not separately register arithmetic for every collection containing a time.
-
-Collection arithmetic is lifted from scalar arithmetic.
-
----
-
-# Collection lifting
-
-Arrays and matrices have compound types:
+Do not separately register:
 
 ```text
-array{int}
-array{currency}
-matrix{decimal}
+array{time} - array{time}
+matrix{time} - matrix{time}
+column{...: time} - column{...: time}
 ```
 
-They do not have flat operator registrations such as:
+when the operation should use normal element-wise lifting.
 
-```python
-register_binary("+", "array", "array", ...)
-```
-
-A compound type is not equal to the flat category `"array"`, so such a rule would never match.
-
-Instead:
-
-```text
-array{X} OP array{Y}
-```
-
-resolves the scalar rule:
-
-```text
-X OP Y
-```
-
-and lifts that implementation element-wise.
-
-For example:
-
-```text
-array{int} / array{int}
-```
-
-looks up:
-
-```text
-int / int → decimal
-```
-
-and therefore produces:
-
-```text
-array{decimal}
-```
-
-Likewise:
-
-```text
-array{currency} * int
-```
-
-broadcasts the scalar operand and resolves:
-
-```text
-currency * int
-```
-
-for every element.
-
-This preserves the central rule:
-
-> Collections do not invent arithmetic semantics. They inherit the semantics of their elements.
-
----
-
-# Columns
-
-Columns are also typed collections, but unlike arrays their field name is metadata:
-
-```text
-column{time_in: time}
-column{time_out: time}
-```
-
-Operator compatibility should depend on the element type, not the column name.
-
-Therefore:
-
-```text
-column{time_out: time}
--
-column{time_in: time}
-```
-
-resolves:
-
-```text
-time - time → duration
-```
-
-and produces a derived duration column.
-
-The names `time_in` and `time_out` must not participate in operator dispatch.
-
-A useful distinction is:
-
-```text
-column{time_in: time}
-```
-
-for a named source column, versus:
-
-```text
-column{duration}
-```
-
-for a derived expression.
-
-This avoids pretending that:
-
-```text
-time_out - time_in
-```
-
-is still either the `time_out` or `time_in` column.
-
----
-
-# Arithmetic supported by collections
-
-Only arithmetic operators are lifted automatically:
-
-```python
-ELEMENTWISE_BINARY_OPS = frozenset({
-    "+",
-    "-",
-    "*",
-    "/",
-    "//",
-    "%",
-    "**",
-})
-
-ELEMENTWISE_UNARY_OPS = frozenset({
-    "+",
-    "-",
-})
-```
-
-Comparisons are intentionally not lifted.
-
-For scalar values:
-
-```text
-a = b
-```
-
-produces:
-
-```text
-boolean
-```
-
-Automatically lifting that operation would make:
-
-```text
-array = array
-```
-
-produce:
-
-```text
-array{boolean}
-```
-
-which has very different semantics from ordinary language-level equality.
-
-Comparison behavior for collections should therefore be introduced explicitly rather than inherited accidentally.
+The collection resolver derives those operations from the scalar rule.
 
 ---
 
@@ -634,18 +554,34 @@ register_binary(
 )
 ```
 
-Some registrations support category aliases such as:
+Some registrations accept the alias:
 
 ```text
 number
 ```
 
-which expand to:
+which expands to:
 
 ```text
 int
 decimal
 ```
+
+For example:
+
+```python
+register_binary(
+    "+",
+    "number",
+    "number",
+    numeric_result,
+    numeric_add,
+)
+```
+
+---
+
+## Symmetric operations
 
 Use:
 
@@ -653,52 +589,313 @@ Use:
 symmetric=True
 ```
 
-only when the operation itself is genuinely commutative.
+only when reversing the operands produces the same semantic operation.
 
 Good candidates:
 
 ```text
-a + b
-a * b
+number * percent
+percent * number
 ```
 
-Bad candidates:
+or:
+
+```text
+date + duration
+duration + date
+```
+
+when the implementation deliberately defines them as equivalent.
+
+Do not use symmetry for:
 
 ```text
 a - b
 a / b
 ```
 
-Never use symmetry simply to save a second registration if reversing the operands changes the operation.
+just to reduce registrations.
+
+Operand order is part of those operations.
 
 ---
 
 # Adding a unary operator rule
 
-Unary operations use the same model:
+Unary operations use the corresponding unary registry.
+
+Example:
 
 ```python
 register_unary(
     "-",
-    "complex",
-    "complex",
-    complex_negate,
+    "duration",
+    "duration",
+    negate_duration,
 )
 ```
 
-Arrays and matrices inherit that operation automatically:
+Where collection lifting permits it:
 
 ```text
--array{complex}
+-array{duration}
 ```
 
-becomes element-wise complex negation.
+inherits the scalar rule and becomes element-wise duration negation.
+
+---
+
+# Collection lifting
+
+Arrays and matrices use compound types such as:
+
+```text
+array{int}
+array{currency}
+matrix{decimal}
+```
+
+A compound type is intentionally distinct from the flat string:
+
+```text
+"array"
+```
+
+Therefore this is not how array arithmetic is defined:
+
+```python
+register_binary(
+    "+",
+    "array",
+    "array",
+    ...
+)
+```
+
+Such a rule would not match:
+
+```text
+array{int}
+```
+
+or:
+
+```text
+array{currency}
+```
+
+Instead, Calc lifts scalar arithmetic.
+
+Given:
+
+```text
+array{X} OP array{Y}
+```
+
+the resolver looks up:
+
+```text
+X OP Y
+```
+
+and applies that implementation element-wise.
+
+For example:
+
+```text
+array{int} / array{int}
+```
+
+uses:
+
+```text
+int / int → decimal
+```
+
+and therefore produces:
+
+```text
+array{decimal}
+```
+
+Likewise:
+
+```text
+array{currency} * int
+```
+
+broadcasts the scalar operand and applies:
+
+```text
+currency * int → currency
+```
+
+to every element.
+
+The central rule is:
+
+> **Collections do not invent scalar arithmetic semantics. They inherit the semantics of their elements.**
+
+---
+
+# Which operators are lifted
+
+Only explicitly approved arithmetic operators are lifted.
+
+For binary arithmetic:
+
+```python
+ELEMENTWISE_BINARY_OPS = frozenset({
+    "+",
+    "-",
+    "*",
+    "/",
+    "//",
+    "%",
+    "**",
+})
+```
+
+For unary arithmetic:
+
+```python
+ELEMENTWISE_UNARY_OPS = frozenset({
+    "+",
+    "-",
+})
+```
+
+Comparisons are intentionally excluded.
+
+For scalar values:
+
+```text
+a = b
+```
+
+returns:
+
+```text
+boolean
+```
+
+Automatically lifting equality would make:
+
+```text
+array = array
+```
+
+return:
+
+```text
+array{boolean}
+```
+
+which is a different semantic idea from ordinary language-level equality.
+
+Collection comparison semantics should therefore be introduced explicitly rather than inherited accidentally.
+
+---
+
+# Arrays and matrices
+
+Arrays and matrices are anonymous homogeneous collections.
+
+Their element type is represented using an unnamed field:
+
+```python
+Type(
+    "array",
+    fields=((None, element_type),),
+)
+```
+
+and:
+
+```python
+Type(
+    "matrix",
+    fields=((None, element_type),),
+)
+```
+
+They share the scalar lifting model but retain distinct collection semantics.
+
+For example:
+
+```text
+array + matrix
+```
+
+does not automatically mean anything.
+
+Do not invent cross-collection broadcasting rules unless the language explicitly defines them.
+
+---
+
+# Columns
+
+Columns are homogeneous typed collections with names.
+
+A source column may have a type such as:
+
+```text
+column{time_in: time}
+```
+
+Operator compatibility depends on:
+
+```text
+time
+```
+
+not on the field name:
+
+```text
+time_in
+```
+
+Therefore:
+
+```text
+column{time_out: time}
+-
+column{time_in: time}
+```
+
+resolves the scalar operation:
+
+```text
+time - time → duration
+```
+
+The current column lifting implementation preserves a source column name for the derived result.
+
+For example, with the left-hand column providing the name:
+
+```text
+column{time_out: time}
+-
+column{time_in: time}
+
+→
+
+column{time_out: duration}
+```
+
+The field name is metadata.
+
+It must not determine whether the arithmetic rule is valid.
+
+If Calc later adopts anonymous derived columns, that should be an explicit language change rather than documentation assuming behavior the engine does not yet implement.
 
 ---
 
 # Adding a cast
 
-Casts have their own registry:
+Casts have their own registry.
+
+Conceptually:
 
 ```python
 register_cast(
@@ -720,35 +917,57 @@ register_cast(
 )
 ```
 
-An absent cast registration is a type error automatically.
+An absent cast rule is a type error.
 
-Do not add a special rejection branch elsewhere.
+Do not add a second rejection path elsewhere unless the cast semantics genuinely require it.
 
 When adding a cast, decide deliberately:
 
 1. What does the conversion mean?
-2. Does it round-trip sensibly?
-3. Does it truncate, round, or reject invalid precision?
+2. What result category does it produce?
+3. Does it round, truncate, normalize, or reject?
 4. Can it fail at runtime?
+5. Does the reverse cast exist?
+6. If both directions exist, should they round-trip?
 
 For example:
 
 ```text
-5%::DECIMAL → 0.05
-0.05::PERCENT → 5%
+5%::DECIMAL
+→
+0.05
 ```
 
-forms a sensible inverse pair.
+and:
+
+```text
+0.05::PERCENT
+→
+5%
+```
+
+form a sensible pair.
 
 ---
 
-# Adding a type
+# Adding a new value type
 
-A genuinely new type requires several decisions.
+A genuinely new Calc value requires several coordinated decisions.
 
-## 1. Representation
+`ContainerNumber` is a useful example because it is:
 
-Prefer an immutable value object:
+* a scalar
+* structured internally
+* validated
+* represented by native literal syntax
+* formatted canonically
+* distinct from ordinary text
+
+---
+
+## 1. Runtime representation
+
+Prefer an immutable value object.
 
 ```python
 @dataclass(frozen=True)
@@ -756,78 +975,261 @@ class YourType:
     ...
 ```
 
-Examples include:
+Examples in Calc include:
 
-```text
-Duration
-Quantity
-Complex
-Blank
-Array
-Matrix
-Column
-```
+* `Duration`
+* `Quantity`
+* `Complex`
+* `Blank`
+* `Char`
+* `ContainerNumber`
+* `Array`
+* `Matrix`
+* `Column`
+* `Table`
 
-Use `__post_init__` for representation-level normalization or validation when needed.
+Use `__post_init__` when the representation has invariants that should always hold.
+
+For example, `ContainerNumber` validates its ISO container-number structure and check digit when it is constructed.
+
+A value object should not be able to exist in an invalid internal state.
 
 ---
 
-## 2. Category
+## 2. Add it to `Value`
 
-Add the value to `category_of`.
+Every runtime value must be represented by the `Value` type alias.
+
+For example:
+
+```python
+type Value = (
+    Number
+    | bool
+    | str
+    | Temporal
+    | Duration
+    | Quantity
+    | Complex
+    | Blank
+    | Char
+    | ContainerNumber
+    | Column
+    | Table
+    | Array
+    | Matrix
+)
+```
+
+Forgetting this step causes static typing to disagree with the actual runtime domain.
+
+---
+
+## 3. Define its category
+
+Add it to `category_of()`.
+
+Use a `Type`:
 
 ```python
 if isinstance(value, YourType):
-    return "your_type"
+    return Type("your_type")
 ```
 
-Also add a human-readable category label for diagnostics.
+For example:
 
-Before adding a category, ask whether the value really represents a new kind of thing.
+```python
+if isinstance(value, ContainerNumber):
+    return Type("container")
+```
 
-For example, infinity does not need its own category if it is represented naturally as a `Decimal`.
+Also add a human-readable diagnostic label:
+
+```python
+CATEGORY_LABELS = {
+    ...
+    "container": "a container number",
+}
+```
 
 ---
 
-## 3. Compound types
+## 4. Decide whether it is scalar or compound
 
-Collection-like categories should use `Type` rather than inventing encoded strings.
+Do not use `Type.fields` merely because a runtime object contains several Python fields.
 
-Examples:
+For example, `ContainerNumber` internally contains:
 
 ```text
-array{currency}
-matrix{decimal}
-column{time_in: time}
+owner code
+equipment category
+serial number
+check digit
 ```
 
-The structure of the type should describe information that matters to checking and dispatch.
-
-Metadata that does not affect operator compatibility should not accidentally become part of scalar dispatch.
-
----
-
-## 4. Literal syntax
-
-Only add tokenizer/parser support if users can construct the type with literal syntax.
-
-A function-created type such as:
+but it is still one scalar Calc value:
 
 ```text
-blank()
+container
 ```
 
-does not require a token.
+It should therefore use:
 
-If the type does have a literal, place specific token rules before generic numeric rules when their prefixes overlap.
+```python
+Type("container")
+```
+
+not:
+
+```python
+Type(
+    "container",
+    fields=(...),
+)
+```
+
+`Type.fields` is for static structural information that matters to Calc's type system, such as:
+
+```text
+array{decimal}
+matrix{int}
+column{price: currency}
+table{date: date, amount: currency}
+```
+
+The internal fields of a scalar dataclass do not automatically belong in the static type schema.
 
 ---
 
-## 5. Comparison semantics
+## 5. Literal syntax
 
-Choose deliberately between:
+Only add lexer/parser support when the type has native literal syntax.
+
+For example:
+
+```calc
+BICU1234565
+```
+
+is a container-number literal.
+
+That requires:
+
+```text
+lexer
+  ↓
+CONTAINER token
+  ↓
+parser
+  ↓
+ContainerNumber(...)
+```
+
+The lexer should validate lexical shape.
+
+The runtime value should validate semantic invariants.
+
+For example, a regex can recognize:
+
+```text
+3 letters
++ U/J/Z
++ 7 digits
+```
+
+while `ContainerNumber` validates the check digit.
+
+Do not put semantic validation into syntax highlighting.
+
+---
+
+## 6. Lexer ordering
+
+Token order matters.
+
+A specific literal must usually appear before a more general token that could consume the same text.
+
+For example:
+
+```text
+BICU1234565
+```
+
+also matches Calc's general identifier shape.
+
+Therefore:
+
+```text
+CONTAINER
+```
+
+must be attempted before:
+
+```text
+IDENTIFIER
+```
+
+The same principle applies to existing tokens such as:
+
+```text
+DATETIME before DATE
+POWER before MULTIPLY
+<= before <
+```
+
+---
+
+## 7. Parser construction
+
+The parser should convert the token into its actual runtime value.
+
+For example:
+
+```python
+if token.kind == "CONTAINER":
+    self.advance()
+
+    return Literal(
+        value=parse_container_literal(
+            token.value,
+            token.position,
+        ),
+        position=token.position,
+    )
+```
+
+The parser should not leave a native literal represented as arbitrary text when Calc has a dedicated runtime value for it.
+
+---
+
+## 8. Editor highlighting
+
+If the development editor mirrors the Calc lexer, add the literal there too.
+
+The editor should recognize the same lexical shape as the engine.
+
+For example:
+
+```js
+const CONTAINER =
+  /^[A-Za-z]{3}[UuJjZz]\d{7}(?![A-Za-z0-9_])/;
+```
+
+and recognize it before general identifiers.
+
+Highlighting should only recognize the token's shape.
+
+The Python engine remains responsible for semantic validation such as a container check digit.
+
+---
+
+## 9. Comparison semantics
+
+Choose deliberately.
 
 ### Fully ordered
+
+Support:
 
 ```text
 =
@@ -838,30 +1240,52 @@ Choose deliberately between:
 >=
 ```
 
-Examples include ordinary numbers, dates, and other values with a meaningful total order.
+only when the type has a meaningful total ordering.
 
 ### Equality only
+
+Support:
 
 ```text
 =
 <>
 ```
 
-Examples include values for which equality makes sense but ordering does not.
+when identity/equality makes sense but ordering does not.
 
 ### No comparison
 
 Register nothing.
 
-An unsupported operation should generally be represented by the absence of a dispatch rule.
+An absent operator rule is normally preferable to inventing semantics.
+
+Also remember:
+
+> Python/dataclass equality is not automatically Calc-language equality.
+
+A frozen dataclass may support:
+
+```python
+a == b
+```
+
+inside Python.
+
+That does not automatically make this valid Calc syntax:
+
+```calc
+a = b
+```
+
+The Calc comparison operator must still be registered.
 
 ---
 
-## 6. Arithmetic
+## 10. Arithmetic semantics
 
-Register only operations with clear semantics.
+Register only operations with a clear meaning.
 
-For example, IP addresses might reasonably support:
+For example, a future IP-address type might support:
 
 ```text
 IP + int → IP
@@ -869,7 +1293,7 @@ IP - int → IP
 IP - IP  → int
 ```
 
-while deliberately not defining:
+while deliberately rejecting:
 
 ```text
 IP + IP
@@ -877,41 +1301,92 @@ IP * int
 IP / int
 ```
 
-Leaving a rule unregistered is a feature, not an incomplete implementation.
+Leaving an operation unregistered is not an incomplete implementation.
+
+It is how Calc expresses:
+
+> this operation has no defined meaning.
 
 ---
 
-# Result-type correctness
+## 11. Cast semantics
 
-Never return a runtime value whose category differs from the category promised by the checker.
+Decide whether the new type should convert to or from existing categories.
 
-For example, if:
-
-```text
-decimal - decimal → decimal
-```
-
-was resolved during type checking, the implementation must either:
-
-1. return a decimal, or
-2. raise an `ExpressionError`.
-
-It must not quietly return:
+For example, a domain value might sensibly support:
 
 ```text
-Blank()
+container::TEXT
 ```
 
-or some other category.
+while rejecting:
 
-Otherwise the checker and evaluator disagree, and downstream consumers receive incorrect type information.
+```text
+container::INT
+```
 
-This applies equally to:
+Do not add casts simply because their Python representation makes a conversion technically possible.
 
-* operators
-* functions
-* casts
-* lifted collection operations
+A cast should have meaningful Calc semantics.
+
+---
+
+## 12. Formatting
+
+Every runtime value needs display formatting.
+
+Type-specific formatting should happen before generic fallbacks.
+
+For example:
+
+```python
+if isinstance(value, ContainerNumber):
+    return format_container(value)
+```
+
+and:
+
+```python
+def format_container(
+    value: ContainerNumber,
+) -> str:
+    return str(value)
+```
+
+Composite formatters should reuse `format_result()` for their contained values.
+
+That means a new scalar formatter automatically works inside:
+
+* arrays
+* matrices
+* columns
+* tables
+
+without duplicating its formatting logic.
+
+---
+
+# Constants versus literal types
+
+Not every special value needs literal syntax.
+
+For example:
+
+```calc
+blank()
+```
+
+is constructed through a function and therefore requires no token.
+
+Likewise:
+
+```calc
+pi()
+```
+
+is a zero-argument function.
+
+A native token should be added only when direct literal syntax materially improves the language.
 
 ---
 
@@ -925,34 +1400,65 @@ Examples include:
 1 / 0
 ```
 
-or an arithmetic result outside the valid range of a bounded type.
-
-Those are runtime `ExpressionError`s, not type errors.
-
-Keep the distinction:
+or:
 
 ```text
-unsupported categories → type-check error
-valid categories + invalid values → runtime error
+2026-01-31 + an unsupported calendar operation
 ```
+
+or constructing a domain value with an invalid checksum.
+
+These should raise:
+
+```python
+ExpressionError
+```
+
+rather than leaking implementation exceptions such as:
+
+```text
+ValueError
+InvalidOperation
+IndexError
+KeyError
+```
+
+Where possible, preserve the source position so the UI can point to the failing expression.
 
 ---
 
 # Formatting
 
-New runtime values need a formatting rule.
+`format_result()` is the common display path for runtime values.
 
-Type-specific formatting should occur before generic fallbacks.
+A new type should normally add one type-specific branch:
 
-For compound values, prefer reusing the scalar formatter for their contained values rather than duplicating formatting rules.
-
-For example, formatting:
-
-```text
-array{currency}
+```python
+if isinstance(value, YourType):
+    return format_your_type(value)
 ```
 
-should ultimately reuse currency formatting for each element.
+Compound formatters should recursively use `format_result()`.
+
+For example:
+
+```python
+format_array()
+format_matrix()
+format_column()
+format_table()
+```
+
+should not independently reimplement formatting for:
+
+```text
+currency
+container
+date
+duration
+```
+
+This keeps nested values consistent with scalar values.
 
 ---
 
@@ -960,56 +1466,202 @@ should ultimately reuse currency formatting for each element.
 
 Every extension should test both sides of the checker/evaluator contract.
 
-For a new function:
+Prefer tests that use the real public evaluator.
+
+A direct implementation-unit test may prove that a helper works while missing:
+
+* a forgotten registry entry
+* the wrong result category
+* parser integration
+* lexer integration
+* collection lifting
+* formatting
+
+---
+
+## New function tests
+
+Test:
 
 * valid input
 * invalid category
 * result category
-* runtime result
-* arity error
+* runtime value
+* minimum arity
+* maximum arity
+* runtime failure cases
+* row scope if applicable
+* laziness if applicable
 
-For a new scalar operator:
+---
 
-* valid operation
-* unsupported operation
+## New operator tests
+
+Test:
+
+* valid scalar operation
+* unsupported scalar operation
 * result category
 * runtime value
+* operand order where non-commutative
+* symmetry where registered
+* runtime failure cases
 
-For arithmetic-capable element types, also test collection lifting:
+For arithmetic-capable types, also test intended collection lifting:
 
 ```text
 scalar OP scalar
 array OP array
 array OP scalar
 matrix OP matrix
+matrix OP scalar
+column OP column
+column OP scalar
 ```
 
-when those combinations are intended to work.
+Do not assume every combination should work.
 
-For columns, include at least one test proving that different column names do not prevent compatible element-wise arithmetic.
+---
 
-Example:
+## Column tests
+
+Include at least one test proving that column names do not determine scalar compatibility.
+
+For example:
 
 ```text
 column{time_out: time}
 -
 column{time_in: time}
-→
-column{duration}
 ```
 
-The most valuable test is one that goes through the real public evaluator rather than testing the implementation function directly. That catches forgotten registrations automatically.
+should resolve based on:
+
+```text
+time - time
+```
+
+not on whether:
+
+```text
+time_out == time_in
+```
+
+Also test the actual current naming semantics of the derived result.
 
 ---
 
-# Recommended extension API
+## New cast tests
 
-The long-term goal should be that most additions look like one of these.
+Test:
+
+* valid conversion
+* unsupported conversion
+* result category
+* exact runtime value
+* precision behavior
+* invalid runtime values
+* round-trip behavior when relevant
+
+---
+
+## New type tests
+
+Test:
+
+* construction
+* normalization
+* invalid representation
+* `category_of`
+* diagnostic label
+* literal tokenization if applicable
+* parsing if applicable
+* semantic validation
+* formatting
+* comparison rules
+* arithmetic rules
+* cast rules
+* array use
+* matrix use where meaningful
+* column use
+* table use
+
+For a native literal, test at least one case that could otherwise be confused with a generic identifier or number.
+
+---
+
+# Current extension API
+
+The current source of truth remains the engine registries and resolver functions.
 
 ## Function
 
 ```python
-@function("sqrt", args=1, result=same_type("decimal"))
+FUNCTIONS["name"] = FunctionSpec(
+    "name",
+    min_args,
+    max_args,
+    lazy,
+    result_type,
+    impl,
+    row_scope_arg=...,
+)
+```
+
+## Binary operator
+
+```python
+register_binary(
+    op,
+    left,
+    right,
+    result,
+    impl,
+)
+```
+
+## Unary operator
+
+```python
+register_unary(
+    op,
+    category,
+    result,
+    impl,
+)
+```
+
+## Cast
+
+```python
+register_cast(
+    source,
+    target,
+    result,
+    impl,
+)
+```
+
+These registries are part of the implementation contract today.
+
+---
+
+# Proposed extension API
+
+A cleaner declarative API may eventually remove the need for extension authors to manipulate registries directly.
+
+This section describes a desired direction, not necessarily the current implementation.
+
+## Function
+
+Target style:
+
+```python
+@function(
+    "sqrt",
+    args=1,
+    result=same_type("decimal"),
+)
 def sqrt(values):
     ...
 ```
@@ -1017,7 +1669,11 @@ def sqrt(values):
 ## Constant
 
 ```python
-constant("pi", "decimal", PI)
+constant(
+    "pi",
+    "decimal",
+    PI,
+)
 ```
 
 ## Binary operation
@@ -1039,7 +1695,7 @@ unary(
     "-",
     "duration",
     "duration",
-    duration_negate,
+    negate_duration,
 )
 ```
 
@@ -1054,7 +1710,11 @@ cast(
 )
 ```
 
-The registry remains the source of truth, but extension authors no longer need to manipulate the registry directly.
+The goal is not to replace the registry model.
+
+The goal is to make the registry model easier and safer to extend.
+
+The registries should remain the source of truth.
 
 ---
 
@@ -1062,46 +1722,96 @@ The registry remains the source of truth, but extension authors no longer need t
 
 ## New function
 
-* [ ] Define argument count
-* [ ] Define result-type rule
-* [ ] Define implementation
-* [ ] Register through `@function`
-* [ ] Add valid-input test
-* [ ] Add invalid-category test
-* [ ] Add arity test
+* [ ] define minimum argument count
+* [ ] define maximum argument count
+* [ ] define result-type rule
+* [ ] define implementation
+* [ ] decide whether evaluation must be lazy
+* [ ] decide whether an argument uses row scope
+* [ ] add registry entry
+* [ ] add valid-input test
+* [ ] add invalid-category test
+* [ ] add arity tests
+* [ ] add runtime-failure tests where applicable
+* [ ] verify runtime category matches the checked result type
 
 ## New operator behavior
 
-* [ ] Define scalar semantics first
-* [ ] Register the scalar rule
-* [ ] Decide whether the operation is symmetric
-* [ ] Verify returned runtime category matches the registered result
-* [ ] Test collection lifting where applicable
+* [ ] define scalar semantics first
+* [ ] register scalar rule
+* [ ] decide whether operation is symmetric
+* [ ] verify runtime category matches registered result
+* [ ] test unsupported operand combinations
+* [ ] test runtime failures
+* [ ] test array lifting where applicable
+* [ ] test matrix lifting where applicable
+* [ ] test column lifting where applicable
 
 ## New cast
 
-* [ ] Register source and target
-* [ ] Decide round / truncate / reject behavior
-* [ ] Check whether the conversion should round-trip
-* [ ] Test runtime failures
+* [ ] define source category
+* [ ] define target
+* [ ] define result category
+* [ ] register cast
+* [ ] decide normalize / round / truncate / reject behavior
+* [ ] decide whether reverse conversion exists
+* [ ] test runtime failures
+* [ ] test result category
+* [ ] test round-trip behavior where meaningful
 
 ## New type
 
-* [ ] Immutable representation
-* [ ] `category_of`
-* [ ] diagnostic label
-* [ ] compound `Type` structure if applicable
-* [ ] literal syntax if applicable
-* [ ] comparison semantics
-* [ ] arithmetic registrations
-* [ ] cast registrations
-* [ ] function compatibility
-* [ ] formatting
-* [ ] scalar tests
-* [ ] lifted collection tests where applicable
+* [ ] immutable runtime representation
+* [ ] representation validation / normalization
+* [ ] add to `Value`
+* [ ] add `category_of()` rule returning `Type(...)`
+* [ ] add diagnostic label
+* [ ] decide scalar versus compound `Type`
+* [ ] add literal syntax if applicable
+* [ ] add lexer rule if applicable
+* [ ] add parser construction if applicable
+* [ ] add editor highlighting if applicable
+* [ ] define comparison semantics
+* [ ] define arithmetic semantics
+* [ ] define cast semantics
+* [ ] add function compatibility where applicable
+* [ ] add formatting
+* [ ] add construction tests
+* [ ] add invalid-value tests
+* [ ] add scalar operation tests
+* [ ] add collection tests where applicable
+* [ ] verify checker/evaluator category agreement
 
-The main design rule is simple:
+---
 
-> **Add semantics to the registries, then let the checker, evaluator, and collection lifting derive behavior from them.**
+# Design rule
 
-If adding a feature requires parallel special cases in both `check_types` and `evaluate_node`, first check whether the missing abstraction belongs in the registry or resolver instead.
+The main rule is:
+
+> **Add semantics to the shared registries and resolvers, then let the checker, evaluator, and collection machinery derive behavior from them.**
+
+If adding a feature seems to require parallel special cases in both:
+
+```text
+check_types
+```
+
+and:
+
+```text
+evaluate_node
+```
+
+first ask whether the missing abstraction belongs in:
+
+* a function result resolver
+* the function registry
+* the operator registry
+* the cast registry
+* `category_of`
+* collection lifting
+* the lexer/parser for genuinely new syntax
+
+Special cases should be the exception.
+
+Shared semantics should be the default.
