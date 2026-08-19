@@ -43,7 +43,7 @@ import { tags } from "https://esm.sh/@lezer/highlight@1";
 const FUNCTIONS = new Set([
   "abs", "and", "array", "at", "avg", "blank", "ceil", "coalesce", "colcount",
   "column","concat", "conj", "dayname", "days_between", "e", "eomonth", "eoquarter", "eoyear",
-  "extend", "filter", "format","groupby", "if", "im",
+  "extend", "filter", "format","groupby","hours_between", "if", "im",
   "infinity", "isblank", "left", "len", "matrix", "max", "min", "mid", "not", "now", "or",
   "pi", "re", "right", "round", "rowcount", "select", "sort", "somonth", "soquarter", "soyear",
   "sum", "table", "time", "today", "type_of"
