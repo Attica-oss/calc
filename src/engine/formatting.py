@@ -18,6 +18,7 @@ from .values import (
     is_date_only,
     is_datetime,
     is_time_only,
+    category_of
 )
 
 
@@ -110,11 +111,16 @@ def format_table(value: Table) -> str:
         return "(empty table)"
 
     rows: list[list[str]] = [
-        [format_result(value=value.columns[column][row]) for column in range(len(headers))]
+        [
+            format_result(value=value.columns[column][row])
+            for column in range(len(headers))
+        ]
         for row in range(value.row_count)
     ]
     widths: list[int] = [
-        max(len(headers[i]), *(len(row[i]) for row in rows)) if rows else len(headers[i])
+        max(len(headers[i]), *(len(row[i]) for row in rows))
+        if rows
+        else len(headers[i])
         for i in range(len(headers))
     ]
 
@@ -122,7 +128,9 @@ def format_table(value: Table) -> str:
         " | ".join(headers[i].ljust(widths[i]) for i in range(len(headers))),
         "-+-".join("-" * widths[i] for i in range(len(headers))),
     ]
-    lines.extend(" | ".join(row[i].ljust(widths[i]) for i in range(len(headers))) for row in rows)
+    lines.extend(
+        " | ".join(row[i].ljust(widths[i]) for i in range(len(headers))) for row in rows
+    )
 
     return "\n".join(lines)
 
@@ -138,20 +146,62 @@ def format_array(value: Array) -> str:
 
     return f"[{', '.join(format_result(value=v) for v in value.values)}]"
 
-
 def format_matrix(value: Matrix) -> str:
-    """Render a Matrix as a right-aligned text grid, every cell padded
-    to the widest cell in the whole matrix (not per-column, unlike
-    format_table — a matrix is homogeneous, so one width fits all).
-    """
+    """Render a Matrix as a bracketed text grid."""
 
     if not value.rows:
-        return "(empty matrix)"
+        return f"[]\n{category_of(value)}"
 
-    rows: list[list[str]] = [[format_result(value=cell) for cell in row] for row in value.rows]
-    width: int = max(len(cell) for row in rows for cell in row)
+    rows = [
+        [format_result(value=cell) for cell in row]
+        for row in value.rows
+    ]
 
-    return "\n".join(" | ".join(cell.rjust(width) for cell in row) for row in rows)
+    column_count = len(rows[0])
+
+    widths = [
+        max(len(row[col]) for row in rows)
+        for col in range(column_count)
+    ]
+
+    lines = []
+
+    for row in rows:
+        line = "  ".join(
+            cell.rjust(widths[col])
+            for col, cell in enumerate(row)
+        )
+        lines.append(line)
+
+    if len(lines) == 1:
+        body = f"[{lines[0]}]"
+    else:
+        body = (
+            f"[{lines[0]}\n"
+            + "\n".join(lines[1:-1])
+            + f"\n{lines[-1]}]"
+        )
+
+    return f"{body}\n{category_of(value)}"
+
+
+# def format_matrix(value: Matrix) -> str:
+#     """Render a Matrix as a right-aligned text grid, every cell padded
+#     to the widest cell in the whole matrix (not per-column, unlike
+#     format_table — a matrix is homogeneous, so one width fits all).
+#     """
+
+#     if not value.rows:
+#         return "(empty matrix)\nmatrix{{{value.element_type}}}"
+
+#     rows: list[list[str]] = [
+#         [format_result(value=cell) for cell in row] for row in value.rows
+#     ]
+#     width: int = max(len(cell) for row in rows for cell in row)
+
+#     body = "\n".join(" | ".join(cell.rjust(width) for cell in row) for row in rows)
+
+#     return f"{body}\nmatrix{{{value.element_type}}}"
 
 
 def format_result(value: Value) -> str:

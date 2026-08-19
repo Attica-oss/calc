@@ -11,121 +11,119 @@
  */
 
 .calc-editor {
-  --calc-surface: #f3f6f6;
-  --calc-border: #ccd8d8;
-  --calc-gutter: #94a6a6;
-  --calc-focus: #47798c;
+    --calc-surface: #f3f6f6;
+    --calc-border: #ccd8d8;
+    --calc-gutter: #94a6a6;
+    --calc-focus: #47798c;
+    --calc-comment: #2e7d32; /* Comments */
+    --calc-quantity: #8a5a08; /* $450   2.4t   50%       */
+    --calc-temporal: #1d4e89; /* 2026-01-31   10:30   1mo */
+    --calc-numeric: #5b6874; /* 3.14   0x41              */
+    --calc-imaginary: #a0522d; /* 4i                       */
+    --calc-text: #2c6e63; /* "hello"                  */
+    --calc-name: #232f3a; /* price   [tonnage]        */
+    --calc-call: #6d4a86; /* sum(   pi()              */
+    --calc-keyword: #6d4a86; /* let                      */
+    --calc-type: #2c6e63; /* ::DAYNAME                */
+    --calc-operator: #6b7780; /* + - * / ^ // <>          */
+    --calc-punctuation: #9aa5ad; /* ( ) [ ] , ; ::           */
+    --calc-invalid: #b0342b; /* anything TOKEN_RE rejects */
 
-  --calc-quantity: #8a5a08; /* $450   2.4t   50%       */
-  --calc-temporal: #1d4e89; /* 2026-01-31   10:30   1mo */
-  --calc-numeric: #5b6874; /* 3.14   0x41              */
-  --calc-imaginary: #a0522d; /* 4i                       */
-  --calc-text: #2c6e63; /* "hello"                  */
-  --calc-name: #232f3a; /* price   [tonnage]        */
-  --calc-call: #6d4a86; /* sum(   pi()              */
-  --calc-keyword: #6d4a86; /* let                      */
-  --calc-type: #2c6e63; /* ::DAYNAME                */
-  --calc-operator: #6b7780; /* + - * / ^ // <>          */
-  --calc-punctuation: #9aa5ad; /* ( ) [ ] , ; ::           */
-  --calc-invalid: #b0342b; /* anything TOKEN_RE rejects */
-
-  border: 1px solid var(--calc-border);
-  border-radius: 4px;
-  overflow: hidden;
-  background: var(--calc-surface);
+    border: 1px solid var(--calc-border);
+    border-radius: 4px;
+    overflow: hidden;
+    background: var(--calc-surface);
 }
 
 @media (prefers-color-scheme: dark) {
-  .calc-editor {
-    --calc-surface: #161f1f;
-    --calc-border: #2c3a3a;
-    --calc-gutter: #586969;
-    --calc-focus: #7db4c1;
-    --calc-quantity: #d9a441;
-    --calc-temporal: #7fa8d9;
-    --calc-numeric: #9aa8b2;
-    --calc-imaginary: #d98b62;
-    --calc-text: #63c4a5;
-    --calc-name: #c6d4d2;
-    --calc-call: #b795d6;
-    --calc-keyword: #b795d6;
-    --calc-type: #63c4a5;
-    --calc-operator: #8f9da5;
-    --calc-punctuation: #66757c;
-    --calc-invalid: #e8695c;
-  }
+    .calc-editor {
+        --calc-surface: #161f1f;
+        --calc-border: #2c3a3a;
+        --calc-gutter: #586969;
+        --calc-focus: #7db4c1;
+
+        --calc-comment: #2e7d32; /* Comments */
+        --calc-quantity: #d9a441;
+        --calc-temporal: #7fa8d9;
+        --calc-numeric: #9aa8b2;
+        --calc-imaginary: #d98b62;
+        --calc-text: #63c4a5;
+        --calc-name: #c6d4d2;
+        --calc-call: #b795d6;
+        --calc-keyword: #b795d6;
+        --calc-type: #63c4a5;
+        --calc-operator: #8f9da5;
+        --calc-punctuation: #66757c;
+        --calc-invalid: #e8695c;
+    }
 }
 
-
-
-
-
-
 .calc-editor .cm-editor {
-  background: transparent;
-  font-size: 13px;
-  line-height: 1.7;
+    background: transparent;
+    font-size: 13px;
+    line-height: 1.7;
 }
 
 .calc-editor .cm-scroller {
-  font-family: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono",
-    Menlo, Consolas, monospace;
+    font-family:
+        ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Menlo,
+        Consolas, monospace;
 }
 
 .calc-editor .cm-content {
-  color: var(--calc-name);
-  padding: 8px 0;
+    color: var(--calc-name);
+    padding: 8px 0;
 }
 
 .calc-editor .cm-gutters {
-  background: transparent;
-  border-right: 1px solid var(--calc-border);
-  color: var(--calc-gutter);
+    background: transparent;
+    border-right: 1px solid var(--calc-border);
+    color: var(--calc-gutter);
 }
 
 .calc-editor .cm-activeLine,
 .calc-editor .cm-activeLineGutter {
-  background: color-mix(in srgb, var(--calc-focus) 7%, transparent);
+    background: color-mix(in srgb, var(--calc-focus) 7%, transparent);
 }
 
 calc-editor {
-  --calc-cursor: #e63946;
+    --calc-cursor: #e63946;
 }
 
 @media (prefers-color-scheme: dark) {
-  .calc-editor {
-    --calc-cursor: #ff6b6b;
-  }
+    .calc-editor {
+        --calc-cursor: #ff6b6b;
+    }
 }
 
 .calc-editor .cm-cursor {
-   border-left-color:  #3b82f6;
+    border-left-color: #3b82f6;
 }
 .calc-editor .cm-dropCursor {
-  border-left-color: var(--calc-cursor);
-  border-left-width: 2px;
+    border-left-color: var(--calc-cursor);
+    border-left-width: 2px;
 }
 
 .calc-editor .cm-selectionBackground,
 .calc-editor .cm-content ::selection {
-  background: color-mix(in srgb, var(--calc-focus) 22%, transparent);
+    background: color-mix(in srgb, var(--calc-focus) 22%, transparent);
 }
 
 .calc-editor .cm-matchingBracket {
-  background: color-mix(in srgb, var(--calc-focus) 18%, transparent);
-  outline: 1px solid var(--calc-focus);
+    background: color-mix(in srgb, var(--calc-focus) 18%, transparent);
+    outline: 1px solid var(--calc-focus);
 }
 
 .calc-editor .cm-nonmatchingBracket {
-  color: var(--calc-invalid);
+    color: var(--calc-invalid);
 }
 
 /* The editor swallows the default outline, so focus has to be put back. */
 .calc-editor:focus-within {
-  border-color: var(--calc-focus);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--calc-focus) 25%, transparent);
+    border-color: var(--calc-focus);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--calc-focus) 25%, transparent);
 }
 
 .calc-editor .cm-editor.cm-focused {
-  outline: none;
+    outline: none;
 }

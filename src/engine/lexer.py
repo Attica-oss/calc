@@ -27,6 +27,8 @@ TOKEN_RE: Pattern[str] = re.compile(
     r"""
     (?P<SPACE>\s+)
     |
+    (?P<COMMENT>^[ \t]*//[^\r\n]*)
+    |
     (?P<DATETIME>
     \d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])
        \x20
@@ -130,7 +132,7 @@ TOKEN_RE: Pattern[str] = re.compile(
     |
     (?P<IDENTIFIER>[A-Za-z_][A-Za-z0-9_]*)
     """,
-    re.VERBOSE,
+    re.VERBOSE | re.MULTILINE,
 )
 
 
@@ -158,7 +160,7 @@ def tokenize(expression: str) -> list[Token]:
         assert kind is not None
         value: str = match.group()
 
-        if kind != "SPACE":
+        if kind not in ("SPACE", "COMMENT"):
             tokens.append(Token(kind=kind, value=value, position=position))
 
         position = match.end()

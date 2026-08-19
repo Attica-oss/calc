@@ -41,12 +41,57 @@ import { tags } from "https://esm.sh/@lezer/highlight@1";
 
 // FUNCTIONS registry in src/engine/functions.py.
 const FUNCTIONS = new Set([
-  "abs", "and", "array", "at", "avg", "blank", "ceil", "coalesce", "colcount",
-  "column","concat", "conj", "dayname", "days_between", "e", "eomonth", "eoquarter", "eoyear",
-  "extend", "filter", "format","groupby","hours_between", "if", "im",
-  "infinity", "isblank", "left", "len", "matrix", "max", "min", "mid", "not", "now", "or",
-  "pi", "re", "right", "round", "rowcount", "select", "sort", "somonth", "soquarter", "soyear",
-  "sum", "table", "time", "today", "type_of"
+  "abs",
+  "and",
+  "array",
+  "at",
+  "avg",
+  "blank",
+  "ceil",
+  "coalesce",
+  "colcount",
+  "column",
+  "concat",
+  "conj",
+  "dayname",
+  "days_between",
+  "e",
+  "eomonth",
+  "eoquarter",
+  "eoyear",
+  "extend",
+  "filter",
+  "format",
+  "groupby",
+  "hours_between",
+  "if",
+  "im",
+  "infinity",
+  "isblank",
+  "left",
+  "len",
+  "matrix",
+  "max",
+  "min",
+  "mid",
+  "not",
+  "now",
+  "or",
+  "pi",
+  "re",
+  "right",
+  "round",
+  "rowcount",
+  "select",
+  "sort",
+  "somonth",
+  "soquarter",
+  "soyear",
+  "sum",
+  "table",
+  "time",
+  "today",
+  "type_of",
 ]);
 
 // Arity 0,0 in the same registry. They still require call syntax — pi() not
@@ -56,9 +101,23 @@ const NULLARY = new Set(["today", "now", "pi", "e", "infinity"]);
 // register_cast() targets in src/engine/casts.py. Written uppercase by
 // convention (2026-08-08::DAYNAME) but matched case-insensitively.
 const CAST_TARGETS = new Set([
-  "boolean", "char", "date", "datetime", "day", "dayname", "decimal",
-  "duration", "eomonth", "hour", "int", "minute", "monthname", "percent",
-  "second", "text", "time",
+  "boolean",
+  "char",
+  "date",
+  "datetime",
+  "day",
+  "dayname",
+  "decimal",
+  "duration",
+  "eomonth",
+  "hour",
+  "int",
+  "minute",
+  "monthname",
+  "percent",
+  "second",
+  "text",
+  "time",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -129,6 +188,19 @@ const calcParser = {
       return "cast";
     }
 
+    // '//' is a comment only at the start of a line or after ';'.
+    // Otherwise it remains the floor-division operator.
+    if (stream.match(/^\/\//, false)) {
+      const before = stream.string.slice(0, stream.pos).trimEnd();
+
+      const isLineStart = before.length === 0;
+      const isAfterStatement = before.endsWith(";");
+
+      if (isLineStart || isAfterStatement) {
+        stream.skipToEnd();
+        return "comment";
+      }
+    }
     if (stream.match(OPERATOR)) return "operator";
 
     if (stream.match(BRACKET)) {
@@ -197,6 +269,8 @@ const calcParser = {
     imaginary: tags.special(tags.number),
     // Text.
     string: tags.string,
+    // Comments.
+    comment: tags.lineComment,
     // Names.
     name: tags.variableName,
     binding: tags.definition(tags.variableName),
@@ -233,8 +307,19 @@ const calcParser = {
 const calcHighlight = HighlightStyle.define([
   // Quantities: brass. Differentiated by their own visible suffix.
   { tag: tags.unit, color: "var(--calc-quantity)", fontWeight: "600" },
-  { tag: tags.special(tags.unit), color: "var(--calc-quantity)", fontWeight: "600" },
-  { tag: tags.standard(tags.unit), color: "var(--calc-quantity)", fontWeight: "600" },
+  {
+    tag: tags.special(tags.unit),
+    color: "var(--calc-quantity)",
+    fontWeight: "600",
+  },
+  {
+    tag: tags.standard(tags.unit),
+    color: "var(--calc-quantity)",
+    fontWeight: "600",
+  },
+
+  // Comments: green
+  { tag: tags.lineComment, color: "var(--calc-comment)", fontStyle: "italic" },
 
   // Temporals: navy.
   { tag: tags.literal, color: "var(--calc-temporal)", fontWeight: "600" },
@@ -249,12 +334,20 @@ const calcHighlight = HighlightStyle.define([
 
   // Names: ink.
   { tag: tags.variableName, color: "var(--calc-name)" },
-  { tag: tags.definition(tags.variableName), color: "var(--calc-name)", fontWeight: "600" },
+  {
+    tag: tags.definition(tags.variableName),
+    color: "var(--calc-name)",
+    fontWeight: "600",
+  },
   { tag: tags.propertyName, color: "var(--calc-name)", fontStyle: "italic" },
 
   // Callables and constants: plum.
   { tag: tags.function(tags.variableName), color: "var(--calc-call)" },
-  { tag: tags.constant(tags.name), color: "var(--calc-call)", fontStyle: "italic" },
+  {
+    tag: tags.constant(tags.name),
+    color: "var(--calc-call)",
+    fontStyle: "italic",
+  },
   { tag: tags.keyword, color: "var(--calc-keyword)", fontWeight: "600" },
 
   // Casts: the '::' recedes, the target reads as the type it names.
@@ -334,10 +427,17 @@ function render({ model, el }) {
     const incoming = model.get("code") ?? "";
     if (incoming === view.state.doc.toString()) return;
     applyingFromModel = true;
-    view.dispatch({
-      changes: { from: 0, to: view.state.doc.length, insert: incoming },
-    });
-    applyingFromModel = false;
+    try {
+       view.dispatch({
+         changes: {
+           from: 0,
+           to: view.state.doc.length,
+           insert: incoming,
+         },
+       });
+     } finally {
+       applyingFromModel = false;
+     }
   }
 
   model.on("change:code", onCodeChange);
