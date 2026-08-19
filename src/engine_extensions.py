@@ -30,7 +30,6 @@ def _():
     # Calc Engine
     ---
     """)
-    return
 
 
 @app.function
@@ -118,7 +117,6 @@ def _():
 @app.cell
 def _(df):
     mo.ui.table(df) if df is not None else None
-    return
 
 
 @app.cell
@@ -269,7 +267,6 @@ def process(expr, variables=None):
 @app.cell
 def _(expr_input, variables):
     process(expr=expr_input.value["code"], variables=variables)
-    return
 
 
 @app.cell

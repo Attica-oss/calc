@@ -14,6 +14,7 @@ from .calendar_utils import (
     end_of_month,
     end_of_quarter,
     end_of_year,
+    is_public_holiday,
     start_of_month,
     start_of_quarter,
     start_of_year,
@@ -126,7 +127,28 @@ def _time_impl(values):
         raise ExpressionError(str(error)) from error
 
 
-# ---- abs ---------------------------------------------------------
+# --- Is public holiday -------------------------------------------
+
+
+def _public_holiday_result(categories, node):
+    if categories[0] not in {"date", "datetime"}:
+        _fail(
+            node,
+            "public_holiday() requires a date or datetime.",
+        )
+
+    return "boolean"
+
+def _public_holiday_impl(values):
+    value = values[0]
+
+    if isinstance(value, datetime):
+        value = value.date()
+
+    return is_public_holiday(value)
+
+
+# ---- abs ---------------------------------------- -----------------
 
 
 def _abs_result(categories, node):
@@ -682,6 +704,9 @@ def _days_between_result(categories, node):
 
 
 # ---- dayname / time-intelligence date boundaries ---------------------
+#
+#
+
 
 _DAY_ABBREV = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 _DAY_FULL = (
@@ -1227,10 +1252,7 @@ def _text_impl(values):
         return _format_duration(value, format_text)
 
     if category in {"currency", "tonnage", "percent"}:
-        return _format_quantity_text(
-            value,
-            format_text
-        )
+        return _format_quantity_text(value, format_text)
 
     if category in {"int", "decimal"}:
         return _format_number_text(
@@ -1822,6 +1844,9 @@ FUNCTIONS: dict[str, FunctionSpec] = {
         lambda values: (values[1] - values[0]).days,
     ),
     "dayname": FunctionSpec("dayname", 1, 2, False, _dayname_result, _dayname_impl),
+    # public_holiday(date) -> whether the date is a public holiday.
+    "is_public_holiday": FunctionSpec("is_public_holiday", 1, 1, False, _public_holiday_result, _public_holiday_impl),
+
     # startof.../endof... (month/quarter/year) -> the first/last day of
     # the period containing a date or datetime (datetime in, midnight
     # datetime out) — DAX's STARTOFMONTH/ENDOFMONTH/... vocabulary.

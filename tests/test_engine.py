@@ -1301,3 +1301,56 @@ def test_container_formats_inside_array():
     assert format_result(result.value) == (
         "[BICU1234565, ZEPU0037255]"
     )
+
+
+# ---- Public Holiday
+#
+#
+def test_public_holiday_fixed_date():
+    assert_eval(
+        "public_holiday(2026-01-01)",
+        True,
+        "boolean",
+    )
+
+
+def test_public_holiday_regular_day():
+    assert_eval(
+        "public_holiday(2026-01-03)",
+        False,
+        "boolean",
+    )
+
+
+def test_public_holiday_one_time_date():
+    assert_eval(
+        "public_holiday(2026-06-30)",
+        True,
+        "boolean",
+    )
+
+
+def test_public_holiday_new_fixed_holiday():
+    assert_eval(
+        "public_holiday(2026-02-01)",
+        True,
+        "boolean",
+    )
+
+
+def test_public_holiday_accepts_datetime():
+    assert_eval(
+        "public_holiday(2026-06-30 10:30)",
+        True,
+        "boolean",
+    )
+
+
+def test_public_holiday_rejects_non_date():
+    with pytest.raises(
+        ExpressionError,
+        match=r"public_holiday\(\) requires a date or datetime",
+    ):
+        evaluate_expression(
+            'public_holiday("2026-06-30")'
+        )

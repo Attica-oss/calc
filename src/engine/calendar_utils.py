@@ -2,8 +2,87 @@
 
 import calendar
 from datetime import date, datetime, time, timedelta
+from functools import cache
 
 from .values import Duration, ExpressionError
+
+# --- Public Holiday Utilities
+
+NEW_FIXED_HOLIDAY_START: int = 2026
+NEW_FIXED_HOLIDAY_MONTH: int = 2
+NEW_FIXED_HOLIDAY_DAY: int = 1
+
+@cache
+def public_holidays(year: int) -> frozenset[date]:
+    """Calculates the public holidays for a given year."""
+    holidays: set[date] = set()
+
+    fixed_holidays = {
+        date(year, 1, 1),
+        date(year, 1, 2),
+        date(year, 5, 1),
+        date(year, 6, 18),
+        date(year, 6, 29),
+        date(year, 8, 15),
+        date(year, 11, 1),
+        date(year, 12, 8),
+        date(year, 12, 25),
+    }
+
+    if year >= NEW_FIXED_HOLIDAY_START:
+        fixed_holidays.add(date(year, NEW_FIXED_HOLIDAY_MONTH, NEW_FIXED_HOLIDAY_DAY))
+
+    holidays = set(fixed_holidays)
+
+    # One-time holidays (only add for that year)
+    one_time_holidays = {
+        2025: {
+            date(2025, 10, 11),
+            date(2025, 10, 13),
+            date(2025, 10, 27),
+        },
+        2026: {
+            date(2026, 6, 30),
+        },
+    }
+    holidays.update(one_time_holidays.get(year, set()))
+
+    # Gregorian Easter calculation.
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = (19 * a + b - b // 4 - ((b - (b + 8) // 25 + 1) // 3) + 15) % 30
+    e = (32 + 2 * (b % 4) + 2 * (c // 4) - d - (c % 4)) % 7
+    f = d + e - 7 * ((a + 11 * d + 22 * e) // 451) + 114
+    month = f // 31
+    day = f % 31 + 1
+
+    easter = date(year, month, day)
+    holidays.update(
+        {
+            easter,  # Easter Sunday
+            easter + timedelta(days=1),  # Easter Monday
+            easter - timedelta(days=1),  # Holy Saturday
+            easter - timedelta(days=2),  # Good Friday
+            easter + timedelta(days=60),  # Corpus Christi
+        }
+    )
+
+    # Monday-after if fixed holiday is Sunday
+    for holiday in fixed_holidays:
+        if holiday.weekday() == 6:  # Sunday
+            holidays.add(holiday + timedelta(days=1))
+
+    return frozenset(holidays)
+
+
+def is_public_holiday(value: date) -> bool:
+    """Return whether `value` is a public holiday."""
+
+    return value in public_holidays(value.year)
+
+
+# --- Date Arithmetic Utilities
 
 
 def add_months(value: date, months: int) -> date:
@@ -17,9 +96,9 @@ def add_months(value: date, months: int) -> date:
         raise ExpressionError("The resulting date is outside the valid range.")
 
     source_last_day = calendar.monthrange(
-           value.year,
-           value.month,
-       )[1]
+        value.year,
+        value.month,
+    )[1]
 
     target_last_day = calendar.monthrange(
         year,
