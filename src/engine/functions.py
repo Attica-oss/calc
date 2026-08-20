@@ -1579,43 +1579,164 @@ def _select_impl(values):
     )
 
 
+# -- append() works on tables
+#
+#
+
+def _append_result(categories, node):
+    table_type = categories[0]
+    _require_table(node, table_type, "append()")
+
+    row_types = categories[1:]
+    fields = table_type.fields
+
+    if len(row_types) != len(fields):
+        _fail(
+            node,
+            f"append() expected {len(fields)} row values, "
+            f"got {len(row_types)}.",
+        )
+
+    for (name, expected), actual in zip(fields, row_types):
+        if actual != expected:
+            _fail(
+                node,
+                f"append() value for column {name!r} must be "
+                f"{expected}, got {actual}.",
+            )
+
+    return table_type
+
+
+def _append_impl(values):
+    table = values[0]
+    row = values[1:]
+
+    return Table(
+        schema=table.schema,
+        columns=tuple(
+            column + (value,)
+            for column, value in zip(table.columns, row)
+        ),
+    )
+
+
+# ---- extend() works on arrays and tables
+#
+#
 def _extend_result(categories, node):
-    _require_table(node, categories[0], "extend()")
+    base = categories[0]
 
-    name_node = node.args[1]
+    # Array form:
+    #
+    # extend([1, 2], 3)       -> [1, 2, 3]
+    # extend([1, 2], [3, 4])  -> [1, 2, 3, 4]
+    if _is_type(base, "array"):
+        if len(categories) != 2:
+            _fail(node, "extend() on an array takes exactly one value or array.")
 
-    if not isinstance(name_node, Literal) or not isinstance(name_node.value, str):
-        _fail(node, "extend()'s second argument must be a literal text column name.")
+        element_type = base.fields[0][1]
+        extension_type = categories[1]
 
-    new_name = name_node.value
+        if _is_type(extension_type, "array"):
+            extension_element_type = extension_type.fields[0][1]
 
-    if any(name.lower() == new_name.lower() for name, _ in categories[0].fields):
-        _fail(node, f"extend() column name {new_name!r} already exists in this table.")
+            if extension_element_type != element_type:
+                _fail(
+                    node,
+                    "extend() cannot combine arrays with different element types.",
+                )
 
-    return Type("table", fields=categories[0].fields + ((new_name, categories[2]),))
+            return base
+
+        if extension_type != element_type:
+            _fail(
+                node,
+                f"extend() cannot add {extension_type} to an array of {element_type}.",
+            )
+
+        return base
+
+    # Existing table form:
+    #
+    # extend(table, "total", price * quantity)
+    if _is_type(base, "table"):
+        if len(categories) != 3:
+            _fail(
+                node,
+                "extend() on a table takes a column name and expression.",
+            )
+
+        name_node = node.args[1]
+
+        if not isinstance(name_node, Literal) or not isinstance(name_node.value, str):
+            _fail(
+                node,
+                "extend()'s second argument must be a literal text column name.",
+            )
+
+        new_name = name_node.value
+
+        if any(
+            name.lower() == new_name.lower()
+            for name, _ in base.fields
+        ):
+            _fail(
+                node,
+                f"extend() column name {new_name!r} already exists in this table.",
+            )
+
+        return Type(
+            "table",
+            fields=base.fields + ((new_name, categories[2]),),
+        )
+
+    _fail(node, "extend() requires a table or array.")
 
 
 def _extend_impl(args, environment, evaluate, row_scope):
-    table = evaluate(args[0], environment, row_scope)
-    new_name = evaluate(args[1], environment, row_scope)
+    base = evaluate(args[0], environment, row_scope)
 
-    if table.row_count == 0:
-        # The checker already knows the new column's type from the row
-        # expression's structure; the evaluator, like every other node
-        # here, only ever re-derives categories from real values
-        # (category_of), and there are none to derive from.
-        raise ExpressionError(
-            "extend() cannot determine a new column's type on an empty table.",
-            args[2].position,
+    if isinstance(base, Array):
+        extension = evaluate(args[1], environment, row_scope)
+
+        if isinstance(extension, Array):
+            return Array(
+                values=base.values + extension.values,
+                element_type=base.element_type,
+            )
+
+        return Array(
+            values=base.values + (extension,),
+            element_type=base.element_type,
         )
 
-    new_values = tuple(evaluate(args[2], environment, row) for row in _row_dicts(table))
+    if isinstance(base, Table):
+        new_name = evaluate(args[1], environment, row_scope)
 
-    return Table(
-        schema=table.schema + ((new_name, category_of(new_values[0])),),
-        columns=table.columns + (new_values,),
+        if base.row_count == 0:
+            raise ExpressionError(
+                "extend() cannot determine a new column's type on an empty table.",
+                args[2].position,
+            )
+
+        new_values = tuple(
+            evaluate(args[2], environment, row)
+            for row in _row_dicts(base)
+        )
+
+        return Table(
+            schema=base.schema + ((new_name, category_of(new_values[0])),),
+            columns=base.columns + (new_values,),
+        )
+
+    raise ExpressionError(
+        "extend() requires a table or array.",
+        args[0].position,
     )
 
+
+# ----  sort() function
 
 _SORTABLE: set[str] = NUMERIC_CATEGORIES | _ORDERABLE
 
@@ -1953,10 +2074,13 @@ FUNCTIONS: dict[str, FunctionSpec] = {
     ),
     # select(t, "col1", "col2", ...) -> t narrowed to just those columns.
     "select": FunctionSpec("select", 2, None, False, _select_result, _select_impl),
+    # append(t, [row expr...]) -> t with a new row appended.
+    "append": FunctionSpec("append", 1, None, False, _append_result, _append_impl),
     # extend(t, "new_col", [row expr]) -> t with an extra computed column.
     "extend": FunctionSpec(
-        "extend", 3, 3, True, _extend_result, _extend_impl, row_scope_arg=2
+        "extend", 2, 3, True, _extend_result, _extend_impl, row_scope_arg=2
     ),
+
     # sort(t, [row expr][, "asc"|"desc"]) -> t's rows reordered by the
     # row expression's value (ascending by default).
     "sort": FunctionSpec("sort", 2, 3, True, _sort_result, _sort_impl, row_scope_arg=1),

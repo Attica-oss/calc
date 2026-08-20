@@ -1,0 +1,156 @@
+.calc-table-editor {
+    font-family: var(--marimo-text-font, sans-serif);
+    width: 100%;
+}
+
+.cte-toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.cte-toolbar button,
+.cte-toolbar input,
+.cte-toolbar select,
+.cte-inline-type {
+    font: inherit;
+}
+
+.cte-toolbar button {
+    padding: 0.4rem 0.7rem;
+    border: 1px solid var(--slate-7);
+    border-radius: 5px;
+    background: var(--slate-2);
+    cursor: pointer;
+}
+
+.cte-column-name {
+    min-width: 10rem;
+    padding: 0.4rem 0.5rem;
+    border: 1px solid var(--slate-7);
+    border-radius: 5px;
+}
+
+.cte-type-select,
+.cte-inline-type {
+    padding: 0.35rem 0.45rem;
+    border: 1px solid var(--slate-7);
+    border-radius: 5px;
+    background: var(--slate-1);
+}
+
+.cte-viewport {
+    overflow-x: auto;
+    border: 1px solid var(--slate-6);
+    border-radius: 6px;
+}
+
+.cte-grid {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: max-content;
+}
+
+.cte-grid th,
+.cte-grid td {
+    border-right: 1px solid var(--slate-6);
+    border-bottom: 1px solid var(--slate-6);
+    min-width: 9rem;
+    padding: 0;
+}
+
+.cte-grid th {
+    padding: 0.45rem 0.55rem;
+    text-align: left;
+    background: var(--slate-2);
+    font-weight: 600;
+}
+
+.cte-header-name {
+    white-space: nowrap;
+}
+
+.cte-header-type {
+    margin-top: 0.15rem;
+    font-size: 0.75rem;
+    font-weight: normal;
+    opacity: 0.6;
+}
+
+.cte-new-column {
+    background: var(--slate-3) !important;
+}
+
+.cte-new-column-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
+.cte-inline-type {
+    width: 100%;
+    margin-top: 0.3rem;
+    font-size: 0.75rem;
+}
+
+.cte-readonly {
+    padding: 0.4rem 0.55rem !important;
+    background: var(--slate-1);
+    opacity: 0.85;
+}
+
+.cte-cell-input {
+    width: 100%;
+    min-width: 8rem;
+    box-sizing: border-box;
+    padding: 0.45rem 0.55rem;
+    border: 0;
+    border-radius: 0;
+    outline: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+}
+
+.cte-cell-input:focus {
+    box-shadow: inset 0 0 0 2px var(--blue-8);
+}
+
+.cte-cell-input.cte-invalid {
+    box-shadow: inset 0 0 0 2px var(--red-8);
+    background: color-mix(in srgb, var(--red-3) 40%, transparent);
+}
+
+.cte-actions-column,
+.cte-row-action {
+    width: 2.5rem;
+    min-width: 2.5rem !important;
+    text-align: center;
+}
+
+.cte-remove {
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    opacity: 0.55;
+    font-size: 1rem;
+}
+
+.cte-remove:hover {
+    opacity: 1;
+}
+
+.cte-errors {
+    margin-top: 0.75rem;
+    padding: 0.7rem 0.9rem;
+    border: 1px solid var(--red-7);
+    border-radius: 6px;
+}
+
+.cte-errors ul {
+    margin: 0.4rem 0 0;
+    padding-left: 1.25rem;
+}

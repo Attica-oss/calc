@@ -41,6 +41,7 @@ import { tags } from "https://esm.sh/@lezer/highlight@1";
 const FUNCTIONS = new Set([
   "abs",
   "and",
+  "append",
   "array",
   "at",
   "avg",
