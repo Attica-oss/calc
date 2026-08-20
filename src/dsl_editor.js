@@ -35,8 +35,6 @@ import { tags } from "https://esm.sh/@lezer/highlight@1";
 // ---------------------------------------------------------------------------
 // Vocabulary, lifted from the engine.
 //
-// Names are lowercased during parsing, so PI(), Pi() and pi() all resolve to
-// the same entry — every lookup here case-folds first.
 // ---------------------------------------------------------------------------
 
 // FUNCTIONS registry in src/engine/functions.py.
@@ -47,6 +45,7 @@ const FUNCTIONS = new Set([
   "at",
   "avg",
   "blank",
+  "capitalize",
   "ceil",
   "coalesce",
   "colcount",
@@ -71,6 +70,7 @@ const FUNCTIONS = new Set([
   "is_public_holiday",
   "left",
   "len",
+  "lower",
   "matrix",
   "max",
   "min",
@@ -91,8 +91,10 @@ const FUNCTIONS = new Set([
   "sum",
   "table",
   "time",
+  "title",
   "today",
   "type_of",
+  "upper"
 ]);
 
 // Arity 0,0 in the same registry. They still require call syntax — pi() not

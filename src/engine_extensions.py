@@ -1,10 +1,11 @@
 import marimo
 
-__generated_with = "0.23.16"
+__generated_with = "0.24.0"
 app = marimo.App(width="columns")
 
 with app.setup:
     import io
+    from datetime import time,date,datetime,timedelta
 
     import marimo as mo
     import polars as pl
@@ -30,6 +31,7 @@ def _():
     # Calc Engine
     ---
     """)
+    return
 
 
 @app.function
@@ -117,6 +119,7 @@ def _():
 @app.cell
 def _(df):
     mo.ui.table(df) if df is not None else None
+    return
 
 
 @app.cell
@@ -267,6 +270,7 @@ def process(expr, variables=None):
 @app.cell
 def _(expr_input, variables):
     process(expr=expr_input.value["code"], variables=variables)
+    return
 
 
 @app.cell

@@ -1263,6 +1263,65 @@ def _text_impl(values):
     raise ExpressionError(f"text() cannot format {category}.")
 
 
+
+
+# ----- upper()---------
+#
+#
+#
+def _upper_result(categories, node):
+    if categories[0] != "text":
+        _fail(node, "upper() requires text.")
+    return "text"
+
+
+def _upper_impl(values):
+    text = values[0]
+    return text.upper()
+
+
+# --- Lower()---------
+#
+#
+def _lower_result(categories, node):
+    if categories[0] != "text":
+        _fail(node, "lower() requires text.")
+    return "text"
+
+
+def _lower_impl(values):
+    text = values[0]
+    return text.lower()
+
+
+# --- Title()---------
+#
+#
+def _title_result(categories, node):
+    if categories[0] != "text":
+        _fail(node, "title() requires text.")
+    return "text"
+
+
+def _title_impl(values):
+    text = values[0]
+    return text.title()
+
+# --- Capitalize()---------
+#
+#
+def _capitalize_result(categories, node):
+    if categories[0] != "text":
+        _fail(node, "capitalize() requires text.")
+    return "text"
+
+
+def _capitalize_impl(values):
+    text = values[0]
+    return text.capitalize()
+
+
+
 # ----- Left(), right()---------
 #
 #
@@ -1906,4 +1965,12 @@ FUNCTIONS: dict[str, FunctionSpec] = {
     "groupby": FunctionSpec("groupby", 4, 4, False, _groupby_result, _groupby_impl),
     # type_of(v) -> the type of v as a string.
     "type_of": FunctionSpec("type_of", 1, 1, False, _type_of_result, _type_of_impl),
+    # upper(text) -> the text converted to uppercase.
+    "upper": FunctionSpec("upper", 1, 1, False, _upper_result, _upper_impl),
+    # lower(text) -> the text converted to lowercase.
+    "lower": FunctionSpec("lower", 1, 1, False, _lower_result, _lower_impl),
+    # title(text) -> the text with the first letter of each word capitalized.
+    "title": FunctionSpec("title", 1, 1, False, _title_result, _title_impl),
+    # capitalize(text) -> the text with the first letter capitalized.
+    "capitalize": FunctionSpec("capitalize", 1, 1, False, _capitalize_result, _capitalize_impl),
 }

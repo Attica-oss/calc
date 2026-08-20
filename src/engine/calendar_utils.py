@@ -215,6 +215,13 @@ def time_to_seconds(value: time) -> int:
     return value.hour * 3600 + value.minute * 60 + value.second
 
 
+# Add time to date
+#
+def add_time_to_date(date: date, time: time) -> datetime:
+    """Combine a date and time into a datetime."""
+    return datetime.combine(date, time)
+
+
 # ---- Time-intelligence date boundaries -----------------------------
 #
 # Pure date -> date building blocks (DAX's vocabulary — STARTOFMONTH,

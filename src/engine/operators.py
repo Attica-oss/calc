@@ -18,6 +18,7 @@ from .calendar_utils import (
     add_duration_to_date,
     add_duration_to_datetime,
     add_duration_to_time,
+    add_time_to_date,
     time_to_seconds,
     timedelta_to_duration,
 )
@@ -295,6 +296,15 @@ register_binary(
     "time",
     "duration",
     lambda a, b: Duration(seconds=time_to_seconds(a) - time_to_seconds(b)),
+)
+
+
+register_binary(
+    "+",
+    "date",
+    "time",
+    "datetime",
+    lambda a, b: add_time_to_date(a, b),
 )
 
 # Durations scale only by whole numbers; "duration * decimal" is
