@@ -4,11 +4,14 @@ arguments (lazy), its static result type, and its implementation.
 UDFs later become entries added to a copy of this registry.
 """
 
+from __future__ import annotations
+
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal, InvalidOperation
+from typing import Final, Never
 
 from .calendar_utils import (
     end_of_month,
@@ -43,6 +46,12 @@ from .values import (
 # Mirrors evaluator.Category: functions.py can't import it directly,
 # since evaluator.py imports FUNCTIONS/FunctionSpec from here.
 type Category = str | Type
+type Categories = Sequence[Category]
+type Values = Sequence[Value]
+
+type ResultTypeFn = Callable[[Categories, Call], Category]
+type EagerImpl = Callable[[Values], Value]
+type LazyImpl = Callable[..., Value]
 
 
 @dataclass(frozen=True)
@@ -56,10 +65,10 @@ class FunctionSpec:
     max_args: int | None  # None means unbounded
     lazy: bool
     # (argument categories, call node) -> result category
-    result_type: Callable[[list[Category], Call], Category]
+    result_type: ResultTypeFn
     # eager: impl(values) -> value
     # lazy:  impl(argument nodes, environment, evaluate, row_scope) -> value
-    impl: Callable[..., Value]
+    impl: EagerImpl | LazyImpl
     # Index (>= 1) of the one argument that's a row expression, type-
     # checked under a row scope derived from argument 0's (the table's)
     # schema instead of the ambient scope. None for every function that
@@ -67,7 +76,7 @@ class FunctionSpec:
     row_scope_arg: int | None = None
 
 
-def _fail(node, message):
+def _fail(node: Call, message: str) -> Never:
     """Raise an ExpressionError positioned at `node`'s call site."""
 
     raise ExpressionError(message, node.position)
@@ -81,7 +90,7 @@ def _fixed(category):
     return lambda categories, node: category
 
 
-NUMERIC_CATEGORIES: set[str] = {"int", "decimal"}
+NUMERIC_CATEGORIES: Final = frozenset({"int", "decimal"})
 
 
 def _is_type(category, name: str) -> bool:
@@ -139,6 +148,7 @@ def _public_holiday_result(categories, node):
 
     return "boolean"
 
+
 def _public_holiday_impl(values):
     value = values[0]
 
@@ -151,7 +161,7 @@ def _public_holiday_impl(values):
 # ---- abs ---------------------------------------- -----------------
 
 
-def _abs_result(categories, node):
+def _abs_result(categories: Sequence[Category], node: Call):
     category = categories[0]
 
     # The modulus of a complex number is a plain decimal, not another
@@ -172,14 +182,7 @@ def _abs_result(categories, node):
 
     if category == "complex":
         return "decimal"
-
-    if category in NUMERIC_CATEGORIES | {
-        "duration",
-        "currency",
-        "tonnage",
-        "percent",
-    }:
-        return category
+    return category
 
 
 def _abs_impl(values):
@@ -212,7 +215,7 @@ def _abs_impl(values):
 # ---- round -------------------------------------------------------
 
 
-def _round_result(categories, node):
+def _round_result(categories: Categories, node: Call) -> Category:
     if categories[0] not in NUMERIC_CATEGORIES:
         _fail(node, "round() accepts a number.")
 
@@ -243,7 +246,7 @@ def reject_nonfinite(
         raise ExpressionError(f"{operation} cannot operate on an infinite value.")
 
 
-def _round_impl(values):
+def _round_impl(values: Values) -> Value:
     value = values[0]
 
     # Decimal infinities and NaN are not meaningful here.
@@ -267,7 +270,9 @@ def _round_impl(values):
 
 # ---- min / max ---------------------------------------------------
 
-_ORDERABLE = {"date", "datetime", "time", "currency", "tonnage", "percent", "text"}
+_ORDERABLE: Final = frozenset(
+    {"date", "datetime", "time", "currency", "tonnage", "percent", "text"}
+)
 
 
 def _min_max_result(name):
@@ -337,7 +342,7 @@ def _min_max_impl(chooser):
 
 # ---- sum / avg ---------------------------------------------------
 
-_SUMMABLE = {"currency", "tonnage", "percent", "duration", "complex"}
+_SUMMABLE: Final = frozenset({"currency", "tonnage", "percent", "duration", "complex"})
 
 
 def _sum_result(categories, node):
@@ -464,16 +469,24 @@ def _complex_only_result(name):
     return result_type
 
 
-def _re_impl(values):
-    return values[0].real
-
-
-def _im_impl(values):
-    return values[0].imag
-
-
-def _conj_impl(values):
+def _re_impl(values: Values) -> Decimal:
+    """Return the real part of the first complex value."""
     value = values[0]
+    assert isinstance(value, Complex)
+    return value.real
+
+
+def _im_impl(values: Values) -> Decimal:
+    """Return the imaginary part of the first complex value."""
+    value = values[0]
+    assert isinstance(value, Complex)
+    return value.imag
+
+
+def _conj_impl(values: Values) -> Complex:
+    """Return the conjugate of the first complex value."""
+    value = values[0]
+    assert isinstance(value, Complex)
     return Complex(value.real, -value.imag)
 
 
@@ -520,7 +533,7 @@ def _ceil_number(x, multiple):
     return result
 
 
-def _ceil_quantity(x: Quantity, multiple: Quantity):
+def _ceil_quantity(x: Quantity, multiple: Quantity) -> Quantity:
     if multiple.value <= 0:
         raise ExpressionError("ceil()'s multiple must be positive.")
 
@@ -528,7 +541,7 @@ def _ceil_quantity(x: Quantity, multiple: Quantity):
     return Quantity(quotient * multiple.value, x.unit)
 
 
-def _ceil_duration(x: Duration, multiple: Duration):
+def _ceil_duration(x: Duration, multiple: Duration) -> Duration:
     if x.months or multiple.months:
         raise ExpressionError(
             "ceil() can't use a duration that includes calendar months or "
@@ -1011,7 +1024,7 @@ def _at_impl(values):
 
 # ---- text()-----
 #
-_TEXT_FORMATTABLE = {
+_TEXT_FORMATTABLE: Final = frozenset({
     "int",
     "decimal",
     "percent",
@@ -1045,7 +1058,7 @@ _TEXT_FORMATTABLE = {
 # %f  fractional seconds
 # %p  AM/PM
 #
-def _format_chrono(value, format_text):
+def _format_chrono(value: date | datetime | time, format_text: str) -> str:
     try:
         return value.strftime(format_text)
     except (ValueError, TypeError) as exc:
@@ -1091,7 +1104,7 @@ _NUMBER_FORMAT_RE = re.compile(
 )
 
 
-def _parse_number_format(format_text):
+def _parse_number_format(format_text: str) -> NumberFormat:
     match = _NUMBER_FORMAT_RE.fullmatch(format_text)
 
     if match is None:
@@ -1126,7 +1139,8 @@ def _parse_number_format(format_text):
     )
 
 
-def _format_number_text(value, format_text):
+def _format_number_text(value, format_text: str) -> str:
+    """Format a number according to the given format text."""
     spec = _parse_number_format(format_text)
 
     number = Decimal(value)
@@ -1186,7 +1200,7 @@ def _format_number_text(value, format_text):
     return spec.prefix + result + spec.suffix
 
 
-def _format_quantity_text(value, format_text):
+def _format_quantity_text(value: Quantity, format_text: str) -> str:
     return _format_number_text(
         value.value,
         format_text,
@@ -1206,7 +1220,8 @@ def _format_quantity_text(value, format_text):
 #     )
 
 
-def _format_duration(value, format_text):
+def _format_duration(value: Duration, format_text: str) -> str:
+    """Format a duration according to the given format text."""
     seconds = abs(value.seconds)
 
     hours, remainder = divmod(seconds, 3600)
@@ -1263,8 +1278,6 @@ def _text_impl(values):
     raise ExpressionError(f"text() cannot format {category}.")
 
 
-
-
 # ----- upper()---------
 #
 #
@@ -1275,8 +1288,10 @@ def _upper_result(categories, node):
     return "text"
 
 
-def _upper_impl(values):
+def _upper_impl(values: Values) -> str:
+    """Convert the first value to uppercase."""
     text = values[0]
+    assert isinstance(text, str)
     return text.upper()
 
 
@@ -1307,6 +1322,7 @@ def _title_impl(values):
     text = values[0]
     return text.title()
 
+
 # --- Capitalize()---------
 #
 #
@@ -1319,7 +1335,6 @@ def _capitalize_result(categories, node):
 def _capitalize_impl(values):
     text = values[0]
     return text.capitalize()
-
 
 
 # ----- Left(), right()---------
@@ -1512,7 +1527,7 @@ def _require_table(node, category, who):
         _fail(node, f"{who}'s first argument must be a table.")
 
 
-def _row_dicts(table):
+def _row_dicts(table: Table) -> Iterator[dict[str, Value]]:
     """Yield each row of `table` as a {lowercased column name: value} dict."""
 
     names = [name.lower() for name, _ in table.schema]
@@ -1583,6 +1598,7 @@ def _select_impl(values):
 #
 #
 
+
 def _append_result(categories, node):
     table_type = categories[0]
     _require_table(node, table_type, "append()")
@@ -1593,16 +1609,14 @@ def _append_result(categories, node):
     if len(row_types) != len(fields):
         _fail(
             node,
-            f"append() expected {len(fields)} row values, "
-            f"got {len(row_types)}.",
+            f"append() expected {len(fields)} row values, got {len(row_types)}.",
         )
 
     for (name, expected), actual in zip(fields, row_types):
         if actual != expected:
             _fail(
                 node,
-                f"append() value for column {name!r} must be "
-                f"{expected}, got {actual}.",
+                f"append() value for column {name!r} must be {expected}, got {actual}.",
             )
 
     return table_type
@@ -1614,10 +1628,7 @@ def _append_impl(values):
 
     return Table(
         schema=table.schema,
-        columns=tuple(
-            column + (value,)
-            for column, value in zip(table.columns, row)
-        ),
+        columns=tuple(column + (value,) for column, value in zip(table.columns, row)),
     )
 
 
@@ -1677,10 +1688,7 @@ def _extend_result(categories, node):
 
         new_name = name_node.value
 
-        if any(
-            name.lower() == new_name.lower()
-            for name, _ in base.fields
-        ):
+        if any(name.lower() == new_name.lower() for name, _ in base.fields):
             _fail(
                 node,
                 f"extend() column name {new_name!r} already exists in this table.",
@@ -1721,8 +1729,7 @@ def _extend_impl(args, environment, evaluate, row_scope):
             )
 
         new_values = tuple(
-            evaluate(args[2], environment, row)
-            for row in _row_dicts(base)
+            evaluate(args[2], environment, row) for row in _row_dicts(base)
         )
 
         return Table(
@@ -2025,8 +2032,9 @@ FUNCTIONS: dict[str, FunctionSpec] = {
     ),
     "dayname": FunctionSpec("dayname", 1, 2, False, _dayname_result, _dayname_impl),
     # public_holiday(date) -> whether the date is a public holiday.
-    "is_public_holiday": FunctionSpec("is_public_holiday", 1, 1, False, _public_holiday_result, _public_holiday_impl),
-
+    "is_public_holiday": FunctionSpec(
+        "is_public_holiday", 1, 1, False, _public_holiday_result, _public_holiday_impl
+    ),
     # startof.../endof... (month/quarter/year) -> the first/last day of
     # the period containing a date or datetime (datetime in, midnight
     # datetime out) — DAX's STARTOFMONTH/ENDOFMONTH/... vocabulary.
@@ -2080,7 +2088,6 @@ FUNCTIONS: dict[str, FunctionSpec] = {
     "extend": FunctionSpec(
         "extend", 2, 3, True, _extend_result, _extend_impl, row_scope_arg=2
     ),
-
     # sort(t, [row expr][, "asc"|"desc"]) -> t's rows reordered by the
     # row expression's value (ascending by default).
     "sort": FunctionSpec("sort", 2, 3, True, _sort_result, _sort_impl, row_scope_arg=1),
@@ -2096,5 +2103,7 @@ FUNCTIONS: dict[str, FunctionSpec] = {
     # title(text) -> the text with the first letter of each word capitalized.
     "title": FunctionSpec("title", 1, 1, False, _title_result, _title_impl),
     # capitalize(text) -> the text with the first letter capitalized.
-    "capitalize": FunctionSpec("capitalize", 1, 1, False, _capitalize_result, _capitalize_impl),
+    "capitalize": FunctionSpec(
+        "capitalize", 1, 1, False, _capitalize_result, _capitalize_impl
+    ),
 }

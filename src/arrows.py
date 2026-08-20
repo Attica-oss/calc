@@ -26,21 +26,6 @@ with app.setup:
 
 @app.cell
 def _():
-    format_result(Table(
-        schema=(
-            ("a", Type("int")),
-            ("b", Type("int")),
-        ),
-        columns=(
-            (1, 2, 3),
-            (4,),
-        ),
-    ))
-    return
-
-
-@app.cell
-def _():
     days = pa.array([1, 12, 17, 23, 28], type=pa.int8())
 
     days
