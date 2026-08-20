@@ -3,15 +3,44 @@ The value domain: what kinds of things an expression can produce.
 Knows nothing about syntax, operators, or functions.
 """
 
+from __future__ import annotations
+
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from enum import Enum
-from typing import TypeGuard
+from typing import Final, Self, TypeGuard
+
+from .container_number_utils import _ISO6346_LETTER_VALUES, _container_check_digit
 
 # Type Aliases
 type Number = int | Decimal
 type Temporal = date | datetime | time
+type TypeFields = tuple[tuple[str | None, Type], ...]
+type TableSchema = tuple[tuple[str, Type], ...]
+# Every concrete runtime value the engine can produce or hold — the
+# result type of evaluate_node()/evaluate_expression() and the
+# payload type of a Literal AST node. Deliberately excludes `bool`:
+# booleans are represented as plain Python bool (a subclass of int),
+# so they're covered by `int` here in the same way category_of()
+# checks `isinstance(value, bool)` before `isinstance(value, int)`.
+type Value = (
+    Number
+    | bool
+    | str
+    | Temporal
+    | Duration
+    | Quantity
+    | Complex
+    | Blank
+    | Char
+    | Column
+    | Table
+    | Array
+    | Matrix
+    | ContainerNumber
+)
 
 
 class ExpressionError(ValueError):
@@ -21,19 +50,22 @@ class ExpressionError(ValueError):
     known, so the UI can point at the offending token.
     """
 
-    def __init__(self, message: str, position: int | None = None):
+    def __init__(self, message: str, position: int | None = None) -> None:
         super().__init__(message)
         self.message = message
         self.position = position
 
 
-def is_datetime(value) -> TypeGuard[datetime]:
+# --- Date Utility functions ---
+
+
+def is_datetime(value: object) -> TypeGuard[datetime]:
     """Whether `value` is a datetime (as opposed to a bare date or time)."""
 
     return isinstance(value, datetime)
 
 
-def is_date_only(value) -> TypeGuard[date]:
+def is_date_only(value: object) -> TypeGuard[date]:
     """Whether `value` is a date but *not* a datetime — datetime is a
     date subclass, so a plain isinstance(value, date) would also
     match datetimes; category_of()/format_result() need to tell the
@@ -43,72 +75,25 @@ def is_date_only(value) -> TypeGuard[date]:
     return isinstance(value, date) and not isinstance(value, datetime)
 
 
-def is_time_only(value) -> TypeGuard[time]:
+def is_time_only(value: object) -> TypeGuard[time]:
     """Whether `value` is a clock time (no date component)."""
 
     return isinstance(value, time)
 
 
-
-_ISO6346_LETTER_VALUES = {
-    "A": 10,
-    "B": 12,
-    "C": 13,
-    "D": 14,
-    "E": 15,
-    "F": 16,
-    "G": 17,
-    "H": 18,
-    "I": 19,
-    "J": 20,
-    "K": 21,
-    "L": 23,
-    "M": 24,
-    "N": 25,
-    "O": 26,
-    "P": 27,
-    "Q": 28,
-    "R": 29,
-    "S": 30,
-    "T": 31,
-    "U": 32,
-    "V": 34,
-    "W": 35,
-    "X": 36,
-    "Y": 37,
-    "Z": 38,
-}
-
-
-def _container_check_digit(code: str) -> int:
-    """Return the ISO 6346 check digit for the first 10 characters."""
-
-    total = 0
-
-    for position, character in enumerate(code):
-        if "0" <= character <= "9":
-            value = int(character)
-        else:
-            value = _ISO6346_LETTER_VALUES[character]
-
-        total += value * (2**position)
-
-    remainder = total % 11
-
-    return 0 if remainder == 10 else remainder
-
-
+# --- Container Number Value Objects ---
 
 
 @dataclass(frozen=True)
 class ContainerNumber:
     """An ISO 6346 container identification number."""
+
     owner_code: str
     equipment_category: str
     serial_number: str
     check_digit: int
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         owner_code = self.owner_code.upper()
         equipment_category = self.equipment_category.upper()
 
@@ -119,37 +104,27 @@ class ContainerNumber:
             equipment_category,
         )
 
-        if (
-            len(owner_code) != 3
-            or any(character not in _ISO6346_LETTER_VALUES for character in owner_code)
+        if len(owner_code) != 3 or any(
+            character not in _ISO6346_LETTER_VALUES for character in owner_code
         ):
             raise ExpressionError(
                 "A container owner code must contain exactly three letters."
             )
 
         if equipment_category not in {"U", "J", "Z"}:
-            raise ExpressionError(
-                "A container equipment category must be U, J, or Z."
-            )
+            raise ExpressionError("A container equipment category must be U, J, or Z.")
 
-        if (
-            len(self.serial_number) != 6
-            or not all("0" <= character <= "9" for character in self.serial_number)
+        if len(self.serial_number) != 6 or not all(
+            "0" <= character <= "9" for character in self.serial_number
         ):
             raise ExpressionError(
                 "A container serial number must contain exactly six digits."
             )
 
         if not 0 <= self.check_digit <= 9:
-            raise ExpressionError(
-                "A container check digit must be a single digit."
-            )
+            raise ExpressionError("A container check digit must be a single digit.")
 
-        code = (
-            owner_code
-            + equipment_category
-            + self.serial_number
-        )
+        code = owner_code + equipment_category + self.serial_number
 
         expected = _container_check_digit(code)
 
@@ -161,6 +136,9 @@ class ContainerNumber:
 
     def __str__(self) -> str:
         return f"{self.owner_code}{self.equipment_category}{self.serial_number}{self.check_digit}"
+
+
+# --- Unit Value Objects ---
 
 
 class Unit(Enum):
@@ -176,7 +154,7 @@ class Unit(Enum):
     PERCENT = "percent"
 
 
-UNIT_QUANTA = {
+UNIT_QUANTA: Final[Mapping[Unit, Decimal]] = {
     Unit.CURRENCY: Decimal("0.01"),
     Unit.TONNAGE: Decimal("0.001"),
     Unit.PERCENT: Decimal("0.000001"),
@@ -216,7 +194,7 @@ class Quantity:
     value: Decimal
     unit: Unit
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         try:
             quantized = self.value.quantize(UNIT_QUANTA[self.unit], ROUND_HALF_UP)
         except InvalidOperation as error:
@@ -230,9 +208,6 @@ class Quantity:
             ) from error
 
         object.__setattr__(self, "value", quantized)
-
-    # def __add__(self, other):
-    #     return Quantity(self.value + other.value, self.unit)
 
 
 @dataclass(frozen=True)
@@ -297,26 +272,24 @@ class Type(str):
     type error: no registered rule's key can ever match it.
     """
 
-    fields: tuple[tuple[str | None, Type], ...] | None
+    fields: TypeFields | None
 
-    def __new__(
-        cls, name: str, fields: tuple[tuple[str | None, Type], ...] | None = None
-    ):
+    def __new__(cls, name: str, fields: TypeFields | None = None) -> Self:
         self = str.__new__(cls, name)
         self.fields = fields
         return self
 
-    def __eq__(self, other):
+    def __eq__(self, other) -> bool:
         if not isinstance(other, str):
             return NotImplemented
 
         return str.__eq__(self, other) and self.fields == getattr(other, "fields", None)
 
-    def __ne__(self, other):
+    def __ne__(self, other:object) -> bool:
         result = self.__eq__(other)
         return result if result is NotImplemented else not result
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         # Always the plain string's hash, even for compound types:
         # hash-equal-for-unequal-objects is fine (just a bucket
         # collision, resolved by __eq__), but flat types *must* hash
@@ -325,7 +298,7 @@ class Type(str):
         # keep working.
         return str.__hash__(self)
 
-    def __str__(self):
+    def __str__(self) -> str:
         if self.fields:
             # A single unnamed field (array/matrix: no header at all,
             # just an element type) renders as e.g. "array{decimal}"
@@ -340,7 +313,7 @@ class Type(str):
 
         return str.__str__(self)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"Type({str(self)!r})"
 
 
@@ -351,7 +324,7 @@ class Column:
     """
 
     name: str
-    values: tuple[Value, ...]
+    values: tuple[Value, ...]  # to update to Arrow backend.
     element_type: Type
 
 
@@ -362,7 +335,7 @@ class Table:
     functions.py for the only way to construct one from an expression.
     """
 
-    schema: tuple[tuple[str, Type], ...]
+    schema: TableSchema
     columns: tuple[tuple[Value, ...], ...]
 
     @property
@@ -379,8 +352,12 @@ class Array:
     values: tuple[Value, ...]
     element_type: Type
 
-    # def __add__(self, other: Array) -> Array:
-    #     return Array(values=self.values + other.values, element_type=self.element_type)
+    def __post_init__(self) -> None:
+        for value in self.values:
+            if category_of(value) != self.element_type:
+                raise ExpressionError(
+                    f"Expected {self.element_type}, got {category_of(value)}."
+                )
 
 
 @dataclass(frozen=True)
@@ -408,31 +385,7 @@ class Char:
     codepoint: int
 
 
-# Every concrete runtime value the engine can produce or hold — the
-# result type of evaluate_node()/evaluate_expression() and the
-# payload type of a Literal AST node. Deliberately excludes `bool`:
-# booleans are represented as plain Python bool (a subclass of int),
-# so they're covered by `int` here in the same way category_of()
-# checks `isinstance(value, bool)` before `isinstance(value, int)`.
-type Value = (
-    Number
-    | bool
-    | str
-    | Temporal
-    | Duration
-    | Quantity
-    | Complex
-    | Blank
-    | Char
-    | Column
-    | Table
-    | Array
-    | Matrix
-    | ContainerNumber
-)
-
-
-def category_of(value) -> Type:
+def category_of(value: object) -> Type:
     """Map a runtime value to its static type."""
 
     # bool is a subclass of int, so it must be checked first.
@@ -490,7 +443,7 @@ def category_of(value) -> Type:
     raise ExpressionError(f"Unsupported value type: {type(value).__name__}.")
 
 
-CATEGORY_LABELS = {
+CATEGORY_LABELS: Final[dict[str, str]] = {
     "int": "a whole number",
     "decimal": "a decimal number",
     "boolean": "a boolean",
