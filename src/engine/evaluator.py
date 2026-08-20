@@ -5,9 +5,11 @@ evaluator only ever sees well-typed operations, so type errors
 surface before any side effects or partial evaluation.
 """
 
-from collections.abc import Mapping
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from .casts import CAST_RULES
 from .functions import FUNCTIONS, FunctionSpec
@@ -212,8 +214,11 @@ def check_types(
         # only from this particular table's schema — so it's resolved
         # dynamically here, ahead of the static CAST_RULES dict, same
         # spirit as the dispatch tables but keyed by this one Type's
-        # fields instead of a module-load-time registration.
-        if isinstance(source, Type) and source.fields and str.__eq__(source, "table"):
+        # # fields instead of a module-load-time registration.
+        #
+
+        # if isinstance(source, Type) and source.fields and str.__eq__(source, "table"):
+        if isinstance(source, Type) and source == "table" and source.fields:
             field = next(
                 (
                     (name, field_type)
@@ -295,11 +300,15 @@ def evaluate_node(
             spec = environment.functions[node.name]
 
             if spec.lazy:
-                return spec.impl(node.args, environment, evaluate_node, row_scope)
+                lazy_impl = cast(Callable[..., Value], spec.impl)
+                return lazy_impl(node.args, environment, evaluate_node, row_scope)
+                # return spec.impl(node.args, environment, evaluate_node, row_scope)
 
             values = [evaluate_node(argument, environment, row_scope) for argument in node.args]
 
-            return spec.impl(values)
+            eager_impl = cast(Callable[[Sequence[Value]], Value], spec.impl)
+            return eager_impl(values)
+        #  return spec.impl(values)
 
         if isinstance(node, Cast):
             value = evaluate_node(node.value, environment, row_scope)
@@ -354,7 +363,7 @@ class EvaluationResult:
 def evaluate_expression(
     expression: str,
     variables: Mapping[str, Any] | None = None,
-    functions: Mapping[str, Any] | None = None,
+    functions: Mapping[str, FunctionSpec] | None = None,
 ) -> EvaluationResult:
     """tokenize -> parse -> type check -> evaluate.
 

@@ -4,22 +4,7 @@ __generated_with = "0.24.0"
 app = marimo.App(width="columns")
 
 with app.setup:
-    from src.engine import (
-        ExpressionError,
-        Number, # type hint
-        Quantity,
-        Table,
-        Type,
-        Unit,
-        # cast_value,
-        category_of,
-        evaluate_script,
-        format_result,
-        to_decimal,
-        CAST_RULES,
-    )
     from dataclasses import dataclass
-    from decimal import Decimal
 
     import pyarrow as pa
 
@@ -29,7 +14,6 @@ def _():
     days = pa.array([1, 12, 17, 23, 28], type=pa.int8())
 
     days
-    return
 
 
 @app.cell
@@ -46,7 +30,6 @@ def _(Value):
         position: int
 
 
-    return
 
 
 @app.cell

@@ -6,14 +6,15 @@ app = marimo.App(width="full")
 with app.setup:
     import io
     import pathlib
-    import anywidget
-    import traitlets
 
+    import anywidget
     import marimo as mo
     import polars as pl
+    import traitlets
     from scan_google_sheet import ReadSheetError, scan_google_sheet
 
     from engine import (
+        CAST_RULES,
         ExpressionError,
         Number,
         Quantity,
@@ -25,7 +26,6 @@ with app.setup:
         evaluate_script,
         format_result,
         to_decimal,
-        CAST_RULES,
     )
 
     # This is the only mapping the table editor needs to know about Calc types.
@@ -648,6 +648,70 @@ def _(build_expr_input, data, edited_data):
 
 
 @app.cell
+def _(CalcEditor):
+    script_expr_input = mo.ui.anywidget(
+        CalcEditor(debounce_ms=300)
+    )
+
+
+    script_code_result = scripts_output(
+        script_expr_input.value["code"]
+    )
+    return script_code_result, script_expr_input
+
+
+@app.cell
+def _(script_expr_input):
+    script_expr_input
+
+
+@app.cell
+def _(script_expr_input):
+    eval = evaluate_script(format_result(script_expr_input.value["code"]))
+
+    parts = []
+    for name, value in eval.bindings.items():
+        parts.append(mo.md(f"**let {name}**"))
+        parts.append(render_value(value, category_of(value)))
+
+    parts.append(render_value(eval.value, eval.category))
+
+    parts
+
+
+@app.cell
+def _(script_code_result):
+    script_code_result
+
+
+@app.function
+def scripts_output(expr):
+
+    if not expr.strip():
+        return mo.callout(
+            "Write a Calc expression here. `data` is the table for this workspace.",
+            kind="info",
+        )
+
+    try:
+        result = evaluate_script(expr)
+    except ExpressionError as error:
+        parts = [mo.callout(error.message, kind="warn")]
+        if error.position is not None:
+            pointer = " " * error.position + "^"
+            parts.append(mo.md(f"```text\n{expr}\n{pointer}\n```"))
+        return mo.vstack(parts)
+
+    parts = []
+    for name, value in result.bindings.items():
+        parts.append(mo.md(f"**let {name}**"))
+        parts.append(render_value(value, category_of(value)))
+
+    parts.append(render_value(result.value, result.category))
+    return mo.vstack(parts)
+
+
+@app.cell
 def _(
     build_code_result,
     build_expr_input,
@@ -658,6 +722,8 @@ def _(
     load_controls,
     load_expr_input,
     load_status,
+    script_code_result,
+    script_expr_input,
     source_preview,
 ):
     load_workspace = mo.vstack(
@@ -696,14 +762,25 @@ def _(
         ]
     )
 
+    load_code_editor = mo.vstack([
+        script_expr_input,
+        script_code_result
+    ])
+
+
     workspace_tabs = mo.ui.tabs(
         {
             "1. Load": load_workspace,
             "2. Build": build_workspace,
+            "3. Scripts": load_code_editor
         }
     )
 
     mo.vstack([header, workspace_tabs])
+
+
+@app.cell
+def _():
     return
 
 
