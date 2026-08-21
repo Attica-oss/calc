@@ -218,7 +218,7 @@ def check_types(
         #
 
         # if isinstance(source, Type) and source.fields and str.__eq__(source, "table"):
-        if isinstance(source, Type) and source == "table" and source.fields:
+        if isinstance(source, Type) and source.fields and str.__eq__(source, "table"):
             field = next(
                 (
                     (name, field_type)

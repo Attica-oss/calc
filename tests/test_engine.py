@@ -9,6 +9,7 @@ Run from the project root with:
 The suite is independent of marimo and is suitable for CI and pre-commit hooks.
 """
 
+import re
 from collections.abc import Mapping
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -227,6 +228,7 @@ def test_grow_by_is_deliberately_ambiguous_and_rejected():
         ("2026-01-31 + 1mo", date(2026, 2, 28), "date"),
         ("10:30 + 45min", time(11, 15), "time"),
         ("2026-01-05 14:30:00", datetime(2026, 1, 5, 14, 30), "datetime"),
+        ("time(9,30)", time(9, 30, 0), "time"),
     ],
 )
 def test_temporal_expressions(expression, expected_value, expected_category):
@@ -1294,13 +1296,9 @@ def test_container_formatting():
 
 
 def test_container_formats_inside_array():
-    result = evaluate_expression(
-        "array(BICU1234565, ZEPU0037255)"
-    )
+    result = evaluate_expression("array(BICU1234565, ZEPU0037255)")
 
-    assert format_result(result.value) == (
-        "[BICU1234565, ZEPU0037255]"
-    )
+    assert format_result(result.value) == ("[BICU1234565, ZEPU0037255]")
 
 
 # ---- Public Holiday
@@ -1308,7 +1306,7 @@ def test_container_formats_inside_array():
 #
 def test_public_holiday_fixed_date():
     assert_eval(
-        "public_holiday(2026-01-01)",
+        "is_public_holiday(2026-01-01)",
         True,
         "boolean",
     )
@@ -1316,7 +1314,7 @@ def test_public_holiday_fixed_date():
 
 def test_public_holiday_regular_day():
     assert_eval(
-        "public_holiday(2026-01-03)",
+        "is_public_holiday(2026-01-03)",
         False,
         "boolean",
     )
@@ -1324,7 +1322,7 @@ def test_public_holiday_regular_day():
 
 def test_public_holiday_one_time_date():
     assert_eval(
-        "public_holiday(2026-06-30)",
+        "is_public_holiday(2026-06-30)",
         True,
         "boolean",
     )
@@ -1332,7 +1330,7 @@ def test_public_holiday_one_time_date():
 
 def test_public_holiday_new_fixed_holiday():
     assert_eval(
-        "public_holiday(2026-02-01)",
+        "is_public_holiday(2026-02-01)",
         True,
         "boolean",
     )
@@ -1340,7 +1338,7 @@ def test_public_holiday_new_fixed_holiday():
 
 def test_public_holiday_accepts_datetime():
     assert_eval(
-        "public_holiday(2026-06-30 10:30)",
+        "is_public_holiday(2026-06-30 10:30)",
         True,
         "boolean",
     )
@@ -1349,8 +1347,6 @@ def test_public_holiday_accepts_datetime():
 def test_public_holiday_rejects_non_date():
     with pytest.raises(
         ExpressionError,
-        match=r"public_holiday\(\) requires a date or datetime",
+        match=re.escape("is_public_holiday() requires a date or datetime."),
     ):
-        evaluate_expression(
-            'public_holiday("2026-06-30")'
-        )
+        evaluate_expression('is_public_holiday("2026-06-30")')

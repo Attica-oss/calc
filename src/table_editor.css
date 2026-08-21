@@ -3,27 +3,42 @@
     width: 100%;
 }
 
-.cte-toolbar {
+.cte-toolbar,
+.cte-pagination,
+.cte-column-header {
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
     gap: 0.5rem;
-    margin-bottom: 0.75rem;
+}
+
+.cte-toolbar {
+    flex-wrap: wrap;
+    margin-bottom: 0.5rem;
 }
 
 .cte-toolbar button,
 .cte-toolbar input,
 .cte-toolbar select,
-.cte-inline-type {
+.cte-inline-type,
+.cte-header-name-input,
+.cte-formula-input,
+.cte-pagination button {
     font: inherit;
 }
 
-.cte-toolbar button {
+.cte-toolbar button,
+.cte-pagination button {
     padding: 0.4rem 0.7rem;
     border: 1px solid var(--slate-7);
     border-radius: 5px;
     background: var(--slate-2);
     cursor: pointer;
+}
+
+.cte-toolbar button:disabled,
+.cte-pagination button:disabled {
+    cursor: default;
+    opacity: 0.5;
 }
 
 .cte-column-name {
@@ -34,11 +49,27 @@
 }
 
 .cte-type-select,
-.cte-inline-type {
+.cte-inline-type,
+.cte-header-name-input,
+.cte-formula-input {
     padding: 0.35rem 0.45rem;
     border: 1px solid var(--slate-7);
     border-radius: 5px;
     background: var(--slate-1);
+    color: inherit;
+}
+
+.cte-formula-help {
+    margin: 0 0 0.75rem;
+    font-size: 0.78rem;
+    opacity: 0.72;
+}
+
+.cte-empty {
+    padding: 1rem;
+    border: 1px dashed var(--slate-7);
+    border-radius: 6px;
+    opacity: 0.75;
 }
 
 .cte-viewport {
@@ -57,54 +88,50 @@
 .cte-grid td {
     border-right: 1px solid var(--slate-6);
     border-bottom: 1px solid var(--slate-6);
-    min-width: 9rem;
+    min-width: 10rem;
     padding: 0;
 }
 
 .cte-grid th {
     padding: 0.45rem 0.55rem;
     text-align: left;
+    vertical-align: top;
     background: var(--slate-2);
     font-weight: 600;
 }
 
-.cte-header-name {
-    white-space: nowrap;
-}
-
-.cte-header-type {
-    margin-top: 0.15rem;
-    font-size: 0.75rem;
-    font-weight: normal;
-    opacity: 0.6;
-}
-
-.cte-new-column {
+.cte-computed-column {
     background: var(--slate-3) !important;
 }
 
-.cte-new-column-header {
-    display: flex;
-    align-items: center;
+.cte-column-header {
     justify-content: space-between;
-    gap: 0.5rem;
+    margin-bottom: 0.35rem;
 }
 
-.cte-inline-type {
+.cte-header-name-input {
+    min-width: 7rem;
+    flex: 1;
+    font-weight: 600;
+}
+
+.cte-inline-type,
+.cte-formula-input {
+    display: block;
     width: 100%;
+    box-sizing: border-box;
     margin-top: 0.3rem;
-    font-size: 0.75rem;
+    font-size: 0.78rem;
 }
 
-.cte-readonly {
-    padding: 0.4rem 0.55rem !important;
-    background: var(--slate-1);
-    opacity: 0.85;
+.cte-formula-input {
+    font-family: var(--marimo-monospace-font, monospace);
+    font-weight: normal;
 }
 
 .cte-cell-input {
     width: 100%;
-    min-width: 8rem;
+    min-width: 9rem;
     box-sizing: border-box;
     padding: 0.45rem 0.55rem;
     border: 0;
@@ -115,13 +142,24 @@
     font: inherit;
 }
 
-.cte-cell-input:focus {
+.cte-cell-input:focus,
+.cte-header-name-input:focus,
+.cte-formula-input:focus,
+.cte-inline-type:focus {
     box-shadow: inset 0 0 0 2px var(--blue-8);
+    outline: none;
 }
 
-.cte-cell-input.cte-invalid {
-    box-shadow: inset 0 0 0 2px var(--red-8);
-    background: color-mix(in srgb, var(--red-3) 40%, transparent);
+.cte-formula-cell {
+    padding: 0.45rem 0.55rem !important;
+    background: var(--slate-2);
+    font-family: var(--marimo-monospace-font, monospace);
+    opacity: 0.9;
+}
+
+.cte-invalid {
+    box-shadow: inset 0 0 0 2px var(--red-8) !important;
+    background: color-mix(in srgb, var(--red-3) 40%, transparent) !important;
 }
 
 .cte-actions-column,
@@ -141,6 +179,13 @@
 
 .cte-remove:hover {
     opacity: 1;
+}
+
+.cte-pagination {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    margin-top: 0.6rem;
+    font-size: 0.82rem;
 }
 
 .cte-errors {

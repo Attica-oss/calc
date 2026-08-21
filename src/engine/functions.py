@@ -129,7 +129,7 @@ def _time_impl(values) -> time:
 
     hour = values[0]
     minute = values[1]
-    second = values[2]
+    second = values[2] if len(values) == 3 else 0
 
     try:
         return time(hour, minute, second)
@@ -144,7 +144,7 @@ def _public_holiday_result(categories, node):
     if categories[0] not in {"date", "datetime"}:
         _fail(
             node,
-            "public_holiday() requires a date or datetime.",
+            "is_public_holiday() requires a date or datetime.",
         )
 
     return "boolean"
@@ -204,7 +204,9 @@ def _abs_impl(values):
             if value.months <= 0 and value.days <= 0 and value.seconds <= 0:
                 return negate_duration(value)
 
-            raise ExpressionError("abs() cannot normalize a mixed positive and negative duration.")
+            raise ExpressionError(
+                "abs() cannot normalize a mixed positive and negative duration."
+            )
 
         return value
 
@@ -293,7 +295,11 @@ def _min_max_result(name):
             )
 
         if all(category in NUMERIC_CATEGORIES for category in categories):
-            return "int" if all(category == "int" for category in categories) else "decimal"
+            return (
+                "int"
+                if all(category == "int" for category in categories)
+                else "decimal"
+            )
 
         first = categories[0]
 
@@ -325,7 +331,9 @@ def _min_max_impl(chooser):
 
         # Static type says decimal whenever the arguments mix int
         # and decimal, so keep the runtime value consistent.
-        if isinstance(result, int) and any(isinstance(value, Decimal) for value in values):
+        if isinstance(result, int) and any(
+            isinstance(value, Decimal) for value in values
+        ):
             return Decimal(result)
 
         return result
@@ -514,7 +522,9 @@ def _ceil_number(x, multiple):
         raise ExpressionError("ceil()'s multiple must be positive.")
 
     quotient = _guard_indeterminate(
-        lambda: (to_decimal(x) / multiple_decimal).to_integral_value(rounding=ROUND_CEILING)
+        lambda: (to_decimal(x) / multiple_decimal).to_integral_value(
+            rounding=ROUND_CEILING
+        )
     )
     result = quotient * multiple_decimal
 
@@ -692,7 +702,9 @@ def _hours_between_impl(values):
 
         return Decimal((val2 - val1).seconds / 3600).quantize(Decimal("0.01"))
     else:
-        return Decimal((values[1] - values[0]).total_seconds() / 3600).quantize(Decimal("0.01"))
+        return Decimal((values[1] - values[0]).total_seconds() / 3600).quantize(
+            Decimal("0.01")
+        )
 
 
 # ---- days_between ------------------------------------------------
@@ -1003,7 +1015,7 @@ def _at_impl(values):
     row, col = values[1:]
     rows, cols = base.shape
 
-    if not 0 <= row <= rows or not 0 <= col < cols:
+    if not 0 <= row < rows or not 0 <= col < cols:
         raise ExpressionError(
             f"Index ({row}, {col}) is out of range for a {rows}x{cols} matrix (at() is 0-indexed)."
         )
@@ -1434,7 +1446,11 @@ def _is_text_collection(category: Category) -> bool:
     if not isinstance(category, Type) or not category.fields:
         return False
 
-    if _is_type(category, "array") or _is_type(category, "matrix") or _is_type(category, "column"):
+    if (
+        _is_type(category, "array")
+        or _is_type(category, "matrix")
+        or _is_type(category, "column")
+    ):
         return category.fields[0][1] in {"text", "blank"}
 
     return False
@@ -1448,7 +1464,9 @@ def _concat_result(categories, node):
     #
     # concat(delimiter,ignore_empty,value....)
 
-    join_mode = len(categories) >= 3 and categories[0] == "text" and categories[1] == "boolean"
+    join_mode = (
+        len(categories) >= 3 and categories[0] == "text" and categories[1] == "boolean"
+    )
 
     values = categories[2:] if join_mode else categories
 
@@ -1460,7 +1478,9 @@ def _concat_result(categories, node):
 
 
 def _concat_impl(values):
-    join_mode = len(values) >= 3 and isinstance(values[0], str) and isinstance(values[1], bool)
+    join_mode = (
+        len(values) >= 3 and isinstance(values[0], str) and isinstance(values[1], bool)
+    )
 
     if join_mode:
         delimiter = values[0]
@@ -1542,7 +1562,9 @@ def _filter_impl(args, environment, evaluate, row_scope):
 def _select_result(categories, node):
     _require_table(node, categories[0], "select()")
 
-    by_lower = {name.lower(): (name, field_type) for name, field_type in categories[0].fields}
+    by_lower = {
+        name.lower(): (name, field_type) for name, field_type in categories[0].fields
+    }
     fields = []
     seen_lower = set()
 
@@ -1709,7 +1731,9 @@ def _extend_impl(args, environment, evaluate, row_scope):
                 args[2].position,
             )
 
-        new_values = tuple(evaluate(args[2], environment, row) for row in _row_dicts(base))
+        new_values = tuple(
+            evaluate(args[2], environment, row) for row in _row_dicts(base)
+        )
 
         return Table(
             schema=base.schema + ((new_name, category_of(new_values[0])),),
@@ -1753,9 +1777,13 @@ def _sort_result(categories, node):
 
 def _sort_impl(args, environment, evaluate, row_scope):
     table = evaluate(args[0], environment, row_scope)
-    descending = len(args) == 3 and evaluate(args[2], environment, row_scope).lower() == "desc"
+    descending = (
+        len(args) == 3 and evaluate(args[2], environment, row_scope).lower() == "desc"
+    )
 
-    keys = [compare_key(evaluate(args[1], environment, row)) for row in _row_dicts(table)]
+    keys = [
+        compare_key(evaluate(args[1], environment, row)) for row in _row_dicts(table)
+    ]
     order = sorted(range(table.row_count), key=lambda i: keys[i], reverse=descending)
     columns = tuple(tuple(column[i] for i in order) for column in table.columns)
 
@@ -1795,7 +1823,9 @@ def _validate_agg(node, agg_fn, element_type):
         }:
             return
 
-        _fail(node, "avg() over a column requires a numeric, quantity, or complex column.")
+        _fail(
+            node, "avg() over a column requires a numeric, quantity, or complex column."
+        )
 
     # sum(): currency/tonnage/percent/duration/complex, same as
     # top-level sum(). min/max: anything orderable (dates, text, ...),
@@ -1811,7 +1841,9 @@ def _validate_agg(node, agg_fn, element_type):
 def _groupby_result(categories, node):
     _require_table(node, categories[0], "groupby()")
 
-    by_lower = {name.lower(): (name, field_type) for name, field_type in categories[0].fields}
+    by_lower = {
+        name.lower(): (name, field_type) for name, field_type in categories[0].fields
+    }
 
     def literal_str(index, what):
         arg_node = node.args[index]
@@ -1829,7 +1861,9 @@ def _groupby_result(categories, node):
         _fail(node, f"groupby(): {group_col!r} is not a column of this table.")
 
     if agg_fn not in _GROUPBY_AGG_FNS:
-        _fail(node, f"groupby()'s aggregate function must be one of {_GROUPBY_AGG_FNS}.")
+        _fail(
+            node, f"groupby()'s aggregate function must be one of {_GROUPBY_AGG_FNS}."
+        )
 
     group_name, group_type = by_lower[group_col.lower()]
 
@@ -1854,7 +1888,9 @@ def _groupby_result(categories, node):
 def _groupby_impl(values):
     table, group_col, agg_col, agg_fn = values
     names = [name for name, _ in table.schema]
-    group_index = next(i for i, name in enumerate(names) if name.lower() == group_col.lower())
+    group_index = next(
+        i for i, name in enumerate(names) if name.lower() == group_col.lower()
+    )
     group_field = table.schema[group_index]
 
     groups: dict[Value, list[int]] = {}
@@ -1866,7 +1902,9 @@ def _groupby_impl(values):
         result_field = ("count", Type("int"))
         agg_values = [len(rows) for rows in groups.values()]
     else:
-        agg_index = next(i for i, name in enumerate(names) if name.lower() == agg_col.lower())
+        agg_index = next(
+            i for i, name in enumerate(names) if name.lower() == agg_col.lower()
+        )
         element_type = table.schema[agg_index][1]
         result_field = (f"{agg_fn}_{agg_col}", _agg_result_label(agg_fn, element_type))
 
@@ -1934,7 +1972,9 @@ FUNCTIONS: dict[str, FunctionSpec] = {
     # e() -> 2.71828... (50 significant digits).
     "e": FunctionSpec("e", 0, 0, False, _fixed("decimal"), lambda values: E),
     # infinity() -> Decimal Infinity.
-    "infinity": FunctionSpec("infinity", 0, 0, False, _fixed("decimal"), lambda values: INFINITY),
+    "infinity": FunctionSpec(
+        "infinity", 0, 0, False, _fixed("decimal"), lambda values: INFINITY
+    ),
     # time(hour, minute[, second]) -> a clock time.
     "time": FunctionSpec("time", 2, 3, False, _time_result, _time_impl),
     # abs(x) -> the absolute value/magnitude of a number, duration,
@@ -1948,8 +1988,12 @@ FUNCTIONS: dict[str, FunctionSpec] = {
     "ceil": FunctionSpec("ceil", 2, 2, False, _ceil_result, _ceil_impl),
     # min(...) / max(...) -> the smallest/largest of the arguments, or
     # of a single column()/array() argument's elements.
-    "min": FunctionSpec("min", 1, None, False, _min_max_result("min"), _min_max_impl(min)),
-    "max": FunctionSpec("max", 1, None, False, _min_max_result("max"), _min_max_impl(max)),
+    "min": FunctionSpec(
+        "min", 1, None, False, _min_max_result("min"), _min_max_impl(min)
+    ),
+    "max": FunctionSpec(
+        "max", 1, None, False, _min_max_result("max"), _min_max_impl(max)
+    ),
     # sum(...) / avg(...) -> the total/average of the arguments, or of
     # a single column()/array() argument's elements.
     "sum": FunctionSpec("sum", 1, None, False, _sum_result, _sum_impl),
@@ -1961,7 +2005,9 @@ FUNCTIONS: dict[str, FunctionSpec] = {
     "conj": FunctionSpec("conj", 1, 1, False, _complex_only_result("conj"), _conj_impl),
     # blank() -> the missing-value marker. isblank(x) -> whether x is
     # blank (the one function that accepts any category).
-    "blank": FunctionSpec("blank", 0, 0, False, _fixed("blank"), lambda values: Blank()),
+    "blank": FunctionSpec(
+        "blank", 0, 0, False, _fixed("blank"), lambda values: Blank()
+    ),
     "isblank": FunctionSpec("isblank", 1, 1, False, _isblank_result, _isblank_impl),
     # coalesce(x, default) -> `default` if x is blank(), else x.
     "coalesce": FunctionSpec("coalesce", 2, 2, False, _coalesce_result, _coalesce_impl),
@@ -2022,7 +2068,9 @@ FUNCTIONS: dict[str, FunctionSpec] = {
     # left(text, count) -> the first 'count' characters of 'text'.
     "left": FunctionSpec("left", 1, 2, False, _text_slice_result("left"), _left_impl),
     # right(text, count) -> the last 'count' characters of 'text'.
-    "right": FunctionSpec("right", 1, 2, False, _text_slice_result("right"), _right_impl),
+    "right": FunctionSpec(
+        "right", 1, 2, False, _text_slice_result("right"), _right_impl
+    ),
     # mid(text, start, count) -> the 'count' characters of 'text' starting at 'start'.
     "mid": FunctionSpec("mid", 3, 3, False, _mid_result, _mid_impl),
     # format(number, format) -> the number formatted according to the given format string.
@@ -2032,13 +2080,17 @@ FUNCTIONS: dict[str, FunctionSpec] = {
     "concat": FunctionSpec("concat", 1, None, False, _concat_result, _concat_impl),
     # filter(t, [row expr]) -> the rows of t where the row expression
     # is true.
-    "filter": FunctionSpec("filter", 2, 2, True, _filter_result, _filter_impl, row_scope_arg=1),
+    "filter": FunctionSpec(
+        "filter", 2, 2, True, _filter_result, _filter_impl, row_scope_arg=1
+    ),
     # select(t, "col1", "col2", ...) -> t narrowed to just those columns.
     "select": FunctionSpec("select", 2, None, False, _select_result, _select_impl),
     # append(t, [row expr...]) -> t with a new row appended.
     "append": FunctionSpec("append", 1, None, False, _append_result, _append_impl),
     # extend(t, "new_col", [row expr]) -> t with an extra computed column.
-    "extend": FunctionSpec("extend", 2, 3, True, _extend_result, _extend_impl, row_scope_arg=2),
+    "extend": FunctionSpec(
+        "extend", 2, 3, True, _extend_result, _extend_impl, row_scope_arg=2
+    ),
     # sort(t, [row expr][, "asc"|"desc"]) -> t's rows reordered by the
     # row expression's value (ascending by default).
     "sort": FunctionSpec("sort", 2, 3, True, _sort_result, _sort_impl, row_scope_arg=1),
@@ -2054,5 +2106,7 @@ FUNCTIONS: dict[str, FunctionSpec] = {
     # title(text) -> the text with the first letter of each word capitalized.
     "title": FunctionSpec("title", 1, 1, False, _title_result, _title_impl),
     # capitalize(text) -> the text with the first letter capitalized.
-    "capitalize": FunctionSpec("capitalize", 1, 1, False, _capitalize_result, _capitalize_impl),
+    "capitalize": FunctionSpec(
+        "capitalize", 1, 1, False, _capitalize_result, _capitalize_impl
+    ),
 }

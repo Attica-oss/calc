@@ -2,71 +2,135 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function emptyDraft() {
+function emptyState() {
   return {
+    schema: [],
     rows: [],
-    columns: [],
   };
+}
+
+function normalizeState(value) {
+  const state = value ? clone(value) : emptyState();
+  state.schema = Array.isArray(state.schema) ? state.schema : [];
+  state.rows = Array.isArray(state.rows) ? state.rows : [];
+
+  for (const column of state.schema) {
+    column.name = column.name ?? "";
+    column.type = column.type ?? "text";
+    column.formula = column.formula ?? "";
+  }
+
+  for (const row of state.rows) {
+    while (row.length < state.schema.length) row.push("");
+    if (row.length > state.schema.length) row.splice(state.schema.length);
+  }
+
+  return state;
 }
 
 function render({ model, el }) {
   el.classList.add("calc-table-editor");
+  let page = 0;
 
-  function getDraft() {
-    const value = model.get("draft");
-    return value ? clone(value) : emptyDraft();
+  function getState() {
+    return normalizeState(model.get("state"));
   }
 
-  function saveDraft(draft) {
-    model.set("draft", draft);
+  function saveState(state) {
+    model.set("state", normalizeState(state));
     model.save_changes();
   }
 
+  function allErrors() {
+    return model.get("errors") || [];
+  }
+
   function errorsFor(row, column) {
-    return (model.get("errors") || []).filter(
-      (error) =>
-        error.row === row &&
-        error.column === column
+    return allErrors().filter(
+      (error) => error.row === row && error.column === column,
     );
+  }
+
+  function markInvalid(control, errors) {
+    if (!errors.length) return;
+    control.classList.add("cte-invalid");
+    control.title = errors.map((error) => error.message).join("\n");
   }
 
   function makeCellInput(value, row, column, onChange) {
     const input = document.createElement("input");
-
     input.className = "cte-cell-input";
     input.type = "text";
     input.value = value ?? "";
     input.dataset.row = row;
     input.dataset.column = column;
+    input.setAttribute("aria-label", `Row ${row + 1}, column ${column + 1}`);
+    markInvalid(input, errorsFor(row, column));
 
-    const errors = errorsFor(row, column);
+    input.addEventListener("change", () => onChange(input.value));
+    return input;
+  }
 
-    if (errors.length) {
-      input.classList.add("cte-invalid");
-      input.title = errors
-        .map((error) => error.message)
-        .join("\n");
+  function typeSelect(types, value, onChange) {
+    const select = document.createElement("select");
+    select.className = "cte-inline-type";
+
+    for (const type of types) {
+      const option = document.createElement("option");
+      option.value = type.key;
+      option.textContent = type.label;
+      option.selected = type.key === value;
+      select.appendChild(option);
     }
 
-    input.addEventListener("change", () => {
-      onChange(input.value);
+    select.addEventListener("change", () => onChange(select.value));
+    return select;
+  }
+
+  function drawPagination(parent, totalRows, pageSize) {
+    const pageCount = Math.max(1, Math.ceil(totalRows / pageSize));
+    page = Math.min(page, pageCount - 1);
+
+    const nav = document.createElement("div");
+    nav.className = "cte-pagination";
+
+    const previous = document.createElement("button");
+    previous.type = "button";
+    previous.textContent = "Previous";
+    previous.disabled = page === 0;
+    previous.addEventListener("click", () => {
+      page -= 1;
+      draw();
     });
 
-    return input;
+    const status = document.createElement("span");
+    status.textContent = totalRows
+      ? `Rows ${page * pageSize + 1}-${Math.min((page + 1) * pageSize, totalRows)} of ${totalRows}`
+      : "0 rows";
+
+    const next = document.createElement("button");
+    next.type = "button";
+    next.textContent = "Next";
+    next.disabled = page >= pageCount - 1;
+    next.addEventListener("click", () => {
+      page += 1;
+      draw();
+    });
+
+    nav.append(previous, status, next);
+    parent.appendChild(nav);
   }
 
   function draw() {
     el.replaceChildren();
 
-    const schema = model.get("schema") || [];
-    const baseRows = model.get("rows") || [];
+    const state = getState();
+    const schema = state.schema;
+    const rows = state.rows;
+    const displayRows = model.get("display_rows") || rows;
     const types = model.get("types") || [];
-    const draft = getDraft();
-    const disabled = model.get("disabled");
-
-    // -------------------------------------------------------
-    // TOOLBAR
-    // -------------------------------------------------------
+    const disabled = Boolean(model.get("disabled"));
+    const pageSize = Math.max(1, Number(model.get("page_size") || 25));
 
     const toolbar = document.createElement("div");
     toolbar.className = "cte-toolbar";
@@ -74,135 +138,114 @@ function render({ model, el }) {
     const addRow = document.createElement("button");
     addRow.type = "button";
     addRow.textContent = "+ Row";
-    addRow.disabled = disabled;
-
+    addRow.disabled = disabled || schema.length === 0;
     addRow.addEventListener("click", () => {
-      const next = getDraft();
-
-      next.rows.push(
-        schema.map(() => "")
-      );
-
-      // Every extended column needs one value for the new row.
-      for (const column of next.columns) {
-        column.values.push("");
-      }
-
-      saveDraft(next);
+      const next = getState();
+      next.rows.push(next.schema.map(() => ""));
+      page = Math.floor((next.rows.length - 1) / pageSize);
+      saveState(next);
     });
-
-    toolbar.appendChild(addRow);
-
-    // -------------------------------------------------------
-    // NEW COLUMN CONTROLS
-    // -------------------------------------------------------
 
     const nameInput = document.createElement("input");
     nameInput.type = "text";
     nameInput.className = "cte-column-name";
     nameInput.placeholder = "column name";
     nameInput.disabled = disabled;
+    nameInput.setAttribute("aria-label", "New column name");
 
-    const typeSelect = document.createElement("select");
-    typeSelect.className = "cte-type-select";
-    typeSelect.disabled = disabled;
-
+    const newType = document.createElement("select");
+    newType.className = "cte-type-select";
+    newType.disabled = disabled;
+    newType.setAttribute("aria-label", "New column type");
     for (const type of types) {
       const option = document.createElement("option");
       option.value = type.key;
       option.textContent = type.label;
-      typeSelect.appendChild(option);
+      newType.appendChild(option);
     }
 
     const addColumn = document.createElement("button");
     addColumn.type = "button";
     addColumn.textContent = "+ Column";
     addColumn.disabled = disabled;
-
     addColumn.addEventListener("click", () => {
       const name = nameInput.value.trim();
-
       if (!name) {
         nameInput.focus();
         return;
       }
 
-      const next = getDraft();
-
-      const names = [
-        ...schema.map((column) => column.name),
-        ...next.columns.map((column) => column.name),
-      ].map((value) => value.toLowerCase());
-
+      const next = getState();
+      const names = next.schema.map((column) => column.name.toLowerCase());
       if (names.includes(name.toLowerCase())) {
-        nameInput.setCustomValidity(
-          `Column "${name}" already exists.`
-        );
+        nameInput.setCustomValidity(`Column "${name}" already exists.`);
         nameInput.reportValidity();
         return;
       }
 
       nameInput.setCustomValidity("");
-
-      next.columns.push({
-        name,
-        type: typeSelect.value,
-        values: Array(
-          baseRows.length + next.rows.length
-        ).fill(""),
-      });
-
-      saveDraft(next);
-
+      next.schema.push({ name, type: newType.value, formula: "" });
+      for (const row of next.rows) row.push("");
+      saveState(next);
       nameInput.value = "";
     });
 
-    toolbar.appendChild(nameInput);
-    toolbar.appendChild(typeSelect);
-    toolbar.appendChild(addColumn);
-
+    toolbar.append(addRow, nameInput, newType, addColumn);
     el.appendChild(toolbar);
 
-    // -------------------------------------------------------
-    // TABLE
-    // -------------------------------------------------------
+    const formulaHelp = document.createElement("div");
+    formulaHelp.className = "cte-formula-help";
+    formulaHelp.textContent =
+      "Column formulas can use date::DAYNAME (normalized to [date]::DAYNAME) or [end_time] - [start_time].";
+    el.appendChild(formulaHelp);
+
+    if (schema.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "cte-empty";
+      empty.textContent = "Add a column to start building the table.";
+      el.appendChild(empty);
+      return;
+    }
 
     const viewport = document.createElement("div");
     viewport.className = "cte-viewport";
-
     const table = document.createElement("table");
     table.className = "cte-grid";
 
     const thead = document.createElement("thead");
     const header = document.createElement("tr");
 
-    // Existing columns.
-    for (const column of schema) {
+    schema.forEach((column, columnIndex) => {
       const th = document.createElement("th");
-
-      const name = document.createElement("div");
-      name.className = "cte-header-name";
-      name.textContent = column.name;
-
-      const type = document.createElement("div");
-      type.className = "cte-header-type";
-      type.textContent = column.type;
-
-      th.append(name, type);
-      header.appendChild(th);
-    }
-
-    // New columns.
-    draft.columns.forEach((column, draftColumnIndex) => {
-      const th = document.createElement("th");
-      th.className = "cte-new-column";
+      th.className = column.formula.trim() ? "cte-computed-column" : "";
 
       const top = document.createElement("div");
-      top.className = "cte-new-column-header";
+      top.className = "cte-column-header";
 
-      const name = document.createElement("span");
-      name.className = "cte-header-name";
-      name.textContent = column.name;
+      const name = document.createElement("input");
+      name.className = "cte-header-name-input";
+      name.type = "text";
+      name.value = column.name;
+      name.disabled = disabled;
+      name.setAttribute("aria-label", `Column ${columnIndex + 1} name`);
+      name.addEventListener("change", () => {
+        const nextName = name.value.trim();
+        const next = getState();
+        const duplicate = next.schema.some(
+          (item, index) =>
+            index !== columnIndex && item.name.toLowerCase() === nextName.toLowerCase(),
+        );
+        if (!nextName || duplicate) {
+          name.setCustomValidity(
+            !nextName ? "Column name cannot be empty." : `Column "${nextName}" already exists.`,
+          );
+          name.reportValidity();
+          return;
+        }
+        name.setCustomValidity("");
+        next.schema[columnIndex].name = nextName;
+        saveState(next);
+      });
 
       const remove = document.createElement("button");
       remove.type = "button";
@@ -210,159 +253,98 @@ function render({ model, el }) {
       remove.textContent = "×";
       remove.title = `Remove ${column.name}`;
       remove.disabled = disabled;
-
       remove.addEventListener("click", () => {
-        const next = getDraft();
-        next.columns.splice(draftColumnIndex, 1);
-        saveDraft(next);
+        const next = getState();
+        next.schema.splice(columnIndex, 1);
+        for (const row of next.rows) row.splice(columnIndex, 1);
+        saveState(next);
       });
 
       top.append(name, remove);
 
-      const select = document.createElement("select");
-      select.className = "cte-inline-type";
+      const select = typeSelect(types, column.type, (value) => {
+        const next = getState();
+        next.schema[columnIndex].type = value;
+        saveState(next);
+      });
       select.disabled = disabled;
+      select.setAttribute("aria-label", `${column.name} type`);
 
-      for (const type of types) {
-        const option = document.createElement("option");
-        option.value = type.key;
-        option.textContent = type.label;
-        option.selected = type.key === column.type;
-        select.appendChild(option);
-      }
-
-      select.addEventListener("change", () => {
-        const next = getDraft();
-        next.columns[draftColumnIndex].type = select.value;
-        saveDraft(next);
+      const formula = document.createElement("input");
+      formula.className = "cte-formula-input";
+      formula.type = "text";
+      formula.value = column.formula || "";
+      formula.placeholder = "formula (optional)";
+      formula.disabled = disabled;
+      formula.setAttribute("aria-label", `${column.name} formula`);
+      markInvalid(formula, errorsFor(-1, columnIndex));
+      formula.addEventListener("change", () => {
+        const next = getState();
+        next.schema[columnIndex].formula = formula.value.trim();
+        saveState(next);
       });
 
-      th.append(top, select);
+      th.append(top, select, formula);
       header.appendChild(th);
     });
 
-    // Row action column.
     const actionHeader = document.createElement("th");
     actionHeader.className = "cte-actions-column";
     header.appendChild(actionHeader);
-
     thead.appendChild(header);
     table.appendChild(thead);
 
-    // -------------------------------------------------------
-    // BODY
-    // -------------------------------------------------------
-
     const tbody = document.createElement("tbody");
+    const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
+    page = Math.min(page, pageCount - 1);
+    const start = page * pageSize;
+    const end = Math.min(start + pageSize, rows.length);
 
-    const totalRows =
-      baseRows.length +
-      draft.rows.length;
-
-    for (let rowIndex = 0; rowIndex < totalRows; rowIndex++) {
+    for (let rowIndex = start; rowIndex < end; rowIndex++) {
       const tr = document.createElement("tr");
 
-      const isBaseRow =
-        rowIndex < baseRows.length;
-
-      // Existing columns.
       schema.forEach((column, columnIndex) => {
         const td = document.createElement("td");
-
-        if (isBaseRow) {
-          td.className = "cte-readonly";
-          td.textContent =
-            baseRows[rowIndex]?.[columnIndex] ?? "";
+        if (column.formula.trim()) {
+          td.className = "cte-formula-cell";
+          const value = displayRows[rowIndex]?.[columnIndex] ?? "";
+          td.textContent = value;
+          const cellErrors = errorsFor(rowIndex, columnIndex);
+          if (cellErrors.length) {
+            td.classList.add("cte-invalid");
+            td.title = cellErrors.map((error) => error.message).join("\n");
+          }
         } else {
-          const draftRowIndex =
-            rowIndex - baseRows.length;
-
-          const value =
-            draft.rows[draftRowIndex]?.[columnIndex] ?? "";
-
           td.appendChild(
             makeCellInput(
-              value,
+              rows[rowIndex]?.[columnIndex] ?? "",
               rowIndex,
               columnIndex,
               (nextValue) => {
-                const next = getDraft();
-                next.rows[draftRowIndex][columnIndex] =
-                  nextValue;
-                saveDraft(next);
-              }
-            )
+                const next = getState();
+                next.rows[rowIndex][columnIndex] = nextValue;
+                saveState(next);
+              },
+            ),
           );
         }
-
         tr.appendChild(td);
       });
 
-      // Added columns are editable for every row.
-      draft.columns.forEach(
-        (column, draftColumnIndex) => {
-          const outputColumn =
-            schema.length + draftColumnIndex;
-
-          const td = document.createElement("td");
-
-          td.appendChild(
-            makeCellInput(
-              column.values[rowIndex] ?? "",
-              rowIndex,
-              outputColumn,
-              (nextValue) => {
-                const next = getDraft();
-
-                next.columns[
-                  draftColumnIndex
-                ].values[rowIndex] = nextValue;
-
-                saveDraft(next);
-              }
-            )
-          );
-
-          tr.appendChild(td);
-        }
-      );
-
-      // Remove appended row.
       const action = document.createElement("td");
       action.className = "cte-row-action";
-
-      if (!isBaseRow) {
-        const draftRowIndex =
-          rowIndex - baseRows.length;
-
-        const remove = document.createElement("button");
-
-        remove.type = "button";
-        remove.className = "cte-remove";
-        remove.textContent = "×";
-        remove.title = "Remove appended row";
-        remove.disabled = disabled;
-
-        remove.addEventListener("click", () => {
-          const next = getDraft();
-
-          next.rows.splice(
-            draftRowIndex,
-            1
-          );
-
-          // The new columns cover both original and appended rows.
-          // Remove the corresponding cell too.
-          for (const column of next.columns) {
-            column.values.splice(rowIndex, 1);
-          }
-
-          saveDraft(next);
-        });
-
-        action.appendChild(remove);
-      }
-
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "cte-remove";
+      remove.textContent = "×";
+      remove.title = `Remove row ${rowIndex + 1}`;
+      remove.disabled = disabled;
+      remove.addEventListener("click", () => {
+        const next = getState();
+        next.rows.splice(rowIndex, 1);
+        saveState(next);
+      });
+      action.appendChild(remove);
       tr.appendChild(action);
       tbody.appendChild(tr);
     }
@@ -370,44 +352,34 @@ function render({ model, el }) {
     table.appendChild(tbody);
     viewport.appendChild(table);
     el.appendChild(viewport);
+    drawPagination(el, rows.length, pageSize);
 
-    // -------------------------------------------------------
-    // ERRORS
-    // -------------------------------------------------------
-
-    const errors = model.get("errors") || [];
-
+    const errors = allErrors();
     if (errors.length) {
       const panel = document.createElement("div");
       panel.className = "cte-errors";
-
       const title = document.createElement("strong");
-      title.textContent =
-        `${errors.length} invalid cell${errors.length === 1 ? "" : "s"}`;
-
+      title.textContent = `${errors.length} table error${errors.length === 1 ? "" : "s"}`;
       panel.appendChild(title);
 
       const list = document.createElement("ul");
-
       for (const error of errors) {
         const item = document.createElement("li");
         item.textContent = error.message;
         list.appendChild(item);
       }
-
       panel.appendChild(list);
       el.appendChild(panel);
     }
   }
 
   draw();
-
-  model.on("change:draft", draw);
+  model.on("change:state", draw);
+  model.on("change:display_rows", draw);
   model.on("change:errors", draw);
-  model.on("change:schema", draw);
-  model.on("change:rows", draw);
   model.on("change:types", draw);
   model.on("change:disabled", draw);
+  model.on("change:page_size", draw);
 }
 
 export default { render };

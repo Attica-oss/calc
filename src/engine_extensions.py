@@ -50,6 +50,7 @@ with app.setup:
         "int": Type("int"),
         "decimal": Type("decimal"),
         "boolean": Type("boolean"),
+        "duration": Type("duration"),
         "date": Type("date"),
         "datetime": Type("datetime"),
         "time": Type("time"),
@@ -122,35 +123,86 @@ def editor_type_name(category):
 
 
 @app.function
-def table_editor_data(table):
-    schema = [
-        {"name": name, "type": editor_type_name(category)}
-        for name, category in table.schema
-    ]
-    rows = [
+def storage_text(value, category):
+    category_name = str(category)
+    if category_name == "percent" and isinstance(value, Quantity):
+        return str(value.value * 100)
+    if category_name in {"currency", "tonnage"} and isinstance(value, Quantity):
+        return str(value.value)
+    if category_name == "boolean":
+        return "true" if value else "false"
+    if category_name == "date":
+        return value.isoformat()
+    if category_name == "datetime":
+        return value.isoformat(sep=" ")
+    if category_name == "time":
+        return value.isoformat()
+    if category_name in {"decimal", "duration", "char"}:
+        return format_result(value)
+    return str(value)
+
+
+@app.function
+def table_editor_state(table, formulas=None):
+    formulas = formulas or {}
+    return {
+        "schema": [
+            {
+                "name": name,
+                "type": editor_type_name(category),
+                "formula": formulas.get(name.lower(), ""),
+            }
+            for name, category in table.schema
+        ],
+        "rows": [
+            [
+                storage_text(table.columns[column][row], table.schema[column][1])
+                for column in range(len(table.schema))
+            ]
+            for row in range(table.row_count)
+        ],
+    }
+
+
+@app.function
+def display_rows(table):
+    return [
         [format_result(table.columns[column][row]) for column in range(len(table.schema))]
         for row in range(table.row_count)
     ]
-    return schema, rows
 
 
 @app.function
 def cast_editor_value(raw: str, target: Type):
     source = category_of(raw)
+    target_name = str(target).lower()
+
     if source == target:
         return raw
-    target_name = str(target).lower()
+
     rule = CAST_RULES.get((source, target_name))
-    if rule is None:
-        raise ExpressionError(f"Cannot cast {source} to {target_name}.")
-    result_type, impl = rule
-    value = impl(raw)
-    actual_type = category_of(value)
-    if actual_type != result_type:
-        raise ExpressionError(
-            f"Cast to {target_name} produced {actual_type}, expected {result_type}."
-        )
-    return value
+    if rule is not None:
+        result_type, impl = rule
+        value = impl(raw)
+        actual_type = category_of(value)
+        if actual_type != result_type:
+            raise ExpressionError(
+                f"Cast to {target_name} produced {actual_type}, expected {result_type}."
+            )
+        return value
+
+    # Some Calc literals (notably duration) deliberately do not have a
+    # text -> type cast. Let the engine parse the cell as a Calc literal
+    # before rejecting it, so a duration cell can contain e.g. 1h 30min.
+    try:
+        result = evaluate_script(raw)
+    except ExpressionError as error:
+        raise ExpressionError(f"Cannot cast text to {target_name}: {error.message}") from error
+
+    actual_type = category_of(result.value)
+    if actual_type != target:
+        raise ExpressionError(f"Expected {target_name}, got {actual_type}.")
+    return result.value
 
 
 @app.class_definition
@@ -161,101 +213,193 @@ class TableEditorValidationError(Exception):
 
 
 @app.function
-def apply_table_editor(base, draft):
-    schema = list(base.schema)
-    columns = [list(column) for column in base.columns]
-    errors = []
+def normalize_table_formula(formula: str, column_names):
+    """Allow a light spreadsheet shorthand for field casts.
 
-    for draft_row_index, raw_row in enumerate(draft.get("rows", [])):
-        output_row = base.row_count + draft_row_index
-        if len(raw_row) != len(base.schema):
+    Calc's canonical row reference is ``[date]::DAYNAME``. Inside the
+    table builder only, ``date::DAYNAME`` is normalized to that form when
+    ``date`` is an actual column name. Other expressions keep normal Calc
+    syntax, so arithmetic still reads naturally as
+    ``[end_time] - [start_time]``.
+    """
+    names = {name.lower() for name in column_names}
+    pattern = re.compile(r"(?<![\w\]])([A-Za-z_][A-Za-z0-9_]*)::")
+
+    def replace(match):
+        name = match.group(1)
+        if name.lower() in names:
+            return f"[{name}]::"
+        return match.group(0)
+
+    return pattern.sub(replace, formula)
+
+
+@app.function
+def table_from_editor_state(state):
+    schema_state = state.get("schema", [])
+    rows = state.get("rows", [])
+    errors = []
+    fields = []
+    seen = set()
+
+    for column_index, field in enumerate(schema_state):
+        name = str(field.get("name", "")).strip()
+        type_name = str(field.get("type", "")).lower()
+        formula = str(field.get("formula", "")).strip()
+
+        if not name:
+            errors.append(
+                {"row": -1, "column": column_index, "message": "Column name cannot be empty."}
+            )
+            continue
+
+        key = name.lower()
+        if key in seen:
             errors.append(
                 {
-                    "row": output_row,
-                    "column": 0,
-                    "message": f"Expected {len(base.schema)} values, got {len(raw_row)}.",
+                    "row": -1,
+                    "column": column_index,
+                    "message": f"Duplicate column name {name!r}.",
                 }
             )
             continue
-        for column_index, ((name, category), raw) in enumerate(zip(base.schema, raw_row)):
-            try:
-                value = cast_editor_value(raw, category)
-            except ExpressionError as error:
-                errors.append(
-                    {
-                        "row": output_row,
-                        "column": column_index,
-                        "message": f"{name}: {error.message}",
-                    }
-                )
-            else:
-                columns[column_index].append(value)
+
+        category = EDITOR_TYPES.get(type_name)
+        if category is None:
+            errors.append(
+                {
+                    "row": -1,
+                    "column": column_index,
+                    "message": f"Unknown Calc type {type_name!r}.",
+                }
+            )
+            continue
+
+        seen.add(key)
+        fields.append((column_index, name, category, formula))
+
+    if len(fields) != len(schema_state):
+        raise TableEditorValidationError(errors)
+
+    for row_index, row in enumerate(rows):
+        if len(row) != len(fields):
+            errors.append(
+                {
+                    "row": row_index,
+                    "column": 0,
+                    "message": f"Expected {len(fields)} values, got {len(row)}.",
+                }
+            )
 
     if errors:
         raise TableEditorValidationError(errors)
 
-    total_rows = len(columns[0]) if columns else len(draft.get("rows", []))
-    known_names = {name.lower() for name, _ in schema}
+    declared_schema = tuple((name, category) for _, name, category, _ in fields)
 
-    for draft_column in draft.get("columns", []):
-        name = draft_column["name"].strip()
-        type_key = draft_column["type"]
-        raw_values = draft_column["values"]
-        output_column = len(schema)
+    # Empty tables retain their declared schema. Formula validation begins
+    # once there is a row to evaluate against.
+    if not rows:
+        return Table(
+            schema=declared_schema,
+            columns=tuple(() for _ in fields),
+        )
 
-        if not name:
-            errors.append({"row": 0, "column": output_column, "message": "Column name cannot be empty."})
-            continue
-        if name.lower() in known_names:
-            errors.append(
-                {
-                    "row": 0,
-                    "column": output_column,
-                    "message": f"Column {name!r} already exists.",
-                }
-            )
-            continue
-        category = EDITOR_TYPES.get(type_key)
-        if category is None:
-            errors.append(
-                {
-                    "row": 0,
-                    "column": output_column,
-                    "message": f"Unknown Calc type {type_key!r}.",
-                }
-            )
-            continue
-        if len(raw_values) != total_rows:
-            errors.append(
-                {
-                    "row": 0,
-                    "column": output_column,
-                    "message": f"Column {name!r} has {len(raw_values)} values; expected {total_rows}.",
-                }
-            )
-            continue
+    literal_fields = [field for field in fields if not field[3]]
+    formula_fields = [field for field in fields if field[3]]
 
+    if formula_fields and not literal_fields:
+        raise TableEditorValidationError(
+            [
+                {
+                    "row": -1,
+                    "column": formula_fields[0][0],
+                    "message": "A computed table needs at least one input column.",
+                }
+            ]
+        )
+
+    literal_schema = []
+    literal_columns = []
+
+    for column_index, name, category, _ in literal_fields:
         values = []
-        for row_index, raw in enumerate(raw_values):
+        for row_index, row in enumerate(rows):
             try:
-                values.append(cast_editor_value(raw, category))
+                values.append(cast_editor_value(str(row[column_index]), category))
             except ExpressionError as error:
                 errors.append(
                     {
                         "row": row_index,
-                        "column": output_column,
+                        "column": column_index,
                         "message": f"{name}: {error.message}",
                     }
                 )
-        if len(values) == total_rows:
-            schema.append((name, category))
-            columns.append(values)
-            known_names.add(name.lower())
+        literal_schema.append((name, category))
+        literal_columns.append(tuple(values))
 
     if errors:
         raise TableEditorValidationError(errors)
 
-    return Table(schema=tuple(schema), columns=tuple(tuple(column) for column in columns))
+    table = Table(schema=tuple(literal_schema), columns=tuple(literal_columns))
+
+    # Computed columns are evaluated through Calc's own extend() row scope.
+    # This keeps the spreadsheet editor from inventing a second expression
+    # language: [date]::DAYNAME and [end_time] - [start_time] behave exactly
+    # as they do in ordinary Calc source.
+    for column_index, name, expected_type, formula in formula_fields:
+        normalized_formula = normalize_table_formula(
+            formula,
+            [field_name for field_name, _ in table.schema],
+        )
+        try:
+            result = evaluate_script(
+                f"extend(data, {json.dumps(name)}, {normalized_formula})",
+                variables={"data": table},
+            )
+        except ExpressionError as error:
+            errors.append(
+                {
+                    "row": -1,
+                    "column": column_index,
+                    "message": f"{name}: {error.message}",
+                }
+            )
+            break
+
+        if not isinstance(result.value, Table):
+            errors.append(
+                {
+                    "row": -1,
+                    "column": column_index,
+                    "message": f"{name}: formula did not produce a table column.",
+                }
+            )
+            break
+
+        actual_type = result.value.schema[-1][1]
+        if actual_type != expected_type:
+            errors.append(
+                {
+                    "row": -1,
+                    "column": column_index,
+                    "message": (
+                        f"{name}: formula returns {actual_type}, "
+                        f"but the column is declared {expected_type}."
+                    ),
+                }
+            )
+            break
+
+        table = result.value
+
+    if errors:
+        raise TableEditorValidationError(errors)
+
+    by_name = {name.lower(): i for i, (name, _) in enumerate(table.schema)}
+    return Table(
+        schema=declared_schema,
+        columns=tuple(table.columns[by_name[name.lower()]] for _, name, _, _ in fields),
+    )
 
 
 @app.function
@@ -285,74 +429,53 @@ def parse_schema_spec(spec: str) -> Table:
 
 
 @app.function
-def _storage_text(value, category):
-    if category == "percent" and isinstance(value, Quantity):
-        return str(value.value * 100)
-    if category in {"currency", "tonnage"} and isinstance(value, Quantity):
-        return str(value.value)
-    if category == "boolean":
-        return "true" if value else "false"
-    if category == "date":
-        return value.isoformat()
-    if category == "datetime":
-        return value.isoformat(sep=" ")
-    if category == "time":
-        return value.isoformat()
-    if category == "decimal":
-        return str(value)
-    if category == "char" and isinstance(value, Char):
-        return chr(value.codepoint)
-    return str(value)
-
-
-@app.function
-def table_to_payload(table):
+def table_to_payload(state):
     return {
-        "version": 1,
-        "schema": [{"name": name, "type": str(category)} for name, category in table.schema],
-        "rows": [
-            [
-                _storage_text(table.columns[column][row], str(table.schema[column][1]))
-                for column in range(len(table.schema))
-            ]
-            for row in range(table.row_count)
-        ],
+        "version": 2,
+        "state": state,
     }
 
 
 @app.function
-def table_from_payload(payload):
-    schema = []
-    for field in payload.get("schema", []):
-        type_name = field["type"]
-        if type_name not in EDITOR_TYPES:
-            raise ExpressionError(f"Saved table uses unsupported editor type {type_name!r}.")
-        schema.append((field["name"], EDITOR_TYPES[type_name]))
+def state_from_payload(payload):
+    if payload.get("version") == 2:
+        state = payload.get("state")
+        if not isinstance(state, dict):
+            raise ExpressionError("Saved table has an invalid state payload.")
+        return state
+
+    # Backward compatibility with the first typed-JSON format, which saved
+    # materialized values only and had no formula metadata.
+    schema = payload.get("schema", [])
     rows = payload.get("rows", [])
-    columns = [[] for _ in schema]
-    for row_index, row in enumerate(rows):
-        if len(row) != len(schema):
-            raise ExpressionError(f"Saved row {row_index + 1} does not match the schema.")
-        for column_index, ((_, category), raw) in enumerate(zip(schema, row)):
-            columns[column_index].append(cast_editor_value(str(raw), category))
-    return Table(schema=tuple(schema), columns=tuple(tuple(column) for column in columns))
+    return {
+        "schema": [
+            {
+                "name": field["name"],
+                "type": field["type"],
+                "formula": "",
+            }
+            for field in schema
+        ],
+        "rows": [[str(value) for value in row] for row in rows],
+    }
 
 
 @app.function
-def save_table(table, name: str):
+def save_table(state, name: str):
     clean_name = re.sub(r"[^A-Za-z0-9_-]+", "_", name.strip()).strip("_")
     if not clean_name:
         raise ExpressionError("Give the table a name before saving it.")
     SAVED_TABLE_DIR.mkdir(parents=True, exist_ok=True)
     path = SAVED_TABLE_DIR / f"{clean_name}.json"
-    path.write_text(json.dumps(table_to_payload(table), indent=2), encoding="utf-8")
+    path.write_text(json.dumps(table_to_payload(state), indent=2), encoding="utf-8")
     return path
 
 
 @app.function
 def load_saved_table(path):
     payload = json.loads(path.read_text(encoding="utf-8"))
-    return table_from_payload(payload)
+    return state_from_payload(payload)
 
 
 @app.cell
@@ -360,11 +483,11 @@ def _():
     class CalcTableEditor(anywidget.AnyWidget):
         _esm = HERE / "table_editor.js"
         _css = HERE / "table_editor.css"
-        schema = traitlets.List(traitlets.Dict()).tag(sync=True)
-        rows = traitlets.List(traitlets.List()).tag(sync=True)
+        state = traitlets.Dict(default_value={"schema": [], "rows": []}).tag(sync=True)
+        display_rows = traitlets.List(traitlets.List()).tag(sync=True)
         types = traitlets.List(traitlets.Dict()).tag(sync=True)
-        draft = traitlets.Dict(default_value={"rows": [], "columns": []}).tag(sync=True)
         errors = traitlets.List(traitlets.Dict()).tag(sync=True)
+        page_size = traitlets.Int(25).tag(sync=True)
         disabled = traitlets.Bool(False).tag(sync=True)
 
     class CalcEditor(anywidget.AnyWidget):
@@ -438,11 +561,24 @@ def _():
     load_controls = mo.vstack(
         [csv_upload, sheet_url_input, sheet_name_input, currency_input, tonnage_input]
     )
-    return csv_upload, currency_input, load_controls, sheet_name_input, sheet_url_input, tonnage_input
+    return (
+        csv_upload,
+        currency_input,
+        load_controls,
+        sheet_name_input,
+        sheet_url_input,
+        tonnage_input,
+    )
 
 
 @app.cell
-def _(csv_upload, currency_input, sheet_name_input, sheet_url_input, tonnage_input):
+def _(
+    csv_upload,
+    currency_input,
+    sheet_name_input,
+    sheet_url_input,
+    tonnage_input,
+):
     currency_columns = {name.strip() for name in currency_input.value.split(",") if name.strip()}
     tonnage_columns = {name.strip() for name in tonnage_input.value.split(",") if name.strip()}
     sheet_url = sheet_url_input.value.strip()
@@ -526,41 +662,50 @@ def _():
     table_name_input = mo.ui.text(label="Save as", value="scratch_table")
     save_button = mo.ui.run_button(label="Save table")
     builder_controls = mo.vstack([saved_table_select, schema_input, table_name_input, save_button])
-    return builder_controls, save_button, saved_table_select, schema_input, table_name_input
+    return (
+        builder_controls,
+        save_button,
+        saved_table_select,
+        schema_input,
+        table_name_input,
+    )
 
 
 @app.cell
 def _(saved_table_select, schema_input):
-    builder_base = None
+    builder_seed_state = None
     try:
         if saved_table_select.value != "(new table)":
-            builder_base = load_saved_table(SAVED_TABLE_DIR / f"{saved_table_select.value}.json")
+            builder_seed_state = load_saved_table(
+                SAVED_TABLE_DIR / f"{saved_table_select.value}.json"
+            )
             builder_base_status = mo.callout(
                 f"Opened saved table `{saved_table_select.value}`.", kind="success"
             )
         else:
-            builder_base = parse_schema_spec(schema_input.value)
+            empty_table = parse_schema_spec(schema_input.value)
+            builder_seed_state = table_editor_state(empty_table)
             builder_base_status = mo.callout(
-                f"Empty table ready - {len(builder_base.schema)} typed columns.", kind="success"
+                f"Empty table ready - {len(empty_table.schema)} typed columns.", kind="success"
             )
     except (ExpressionError, OSError, ValueError, json.JSONDecodeError) as error:
-        builder_base = None
+        builder_seed_state = None
         builder_base_status = mo.callout(str(error), kind="warn")
-    return builder_base, builder_base_status
+    return builder_base_status, builder_seed_state
 
 
 @app.cell
-def _(CalcTableEditor, builder_base):
-    if builder_base is None:
+def _(CalcTableEditor, builder_seed_state):
+    if builder_seed_state is None:
         builder_editor = None
         builder_editor_widget = None
         builder_surface = mo.callout("Define a valid schema or open a saved table.", kind="info")
     else:
-        schema, rows = table_editor_data(builder_base)
         builder_editor_widget = CalcTableEditor(
-            schema=schema,
-            rows=rows,
+            state=builder_seed_state,
+            display_rows=builder_seed_state.get("rows", []),
             types=EDITOR_TYPE_OPTIONS,
+            page_size=25,
         )
         builder_editor = mo.ui.anywidget(builder_editor_widget)
         builder_surface = builder_editor
@@ -568,27 +713,37 @@ def _(CalcTableEditor, builder_base):
 
 
 @app.cell
-def _(builder_base, builder_editor, builder_editor_widget):
-    if builder_base is None or builder_editor is None or builder_editor_widget is None:
+def _(builder_editor, builder_editor_widget, builder_seed_state):
+    if builder_seed_state is None or builder_editor is None or builder_editor_widget is None:
+        builder_state = None
         builder_table = None
         builder_status = mo.callout("No editable table yet.", kind="info")
     else:
+        builder_state = builder_editor.value["state"]
         try:
-            builder_table = apply_table_editor(builder_base, builder_editor.value["draft"])
+            builder_table = table_from_editor_state(builder_state)
         except TableEditorValidationError as error:
             builder_editor_widget.errors = error.errors
-            builder_table = builder_base
+            builder_editor_widget.display_rows = builder_state.get("rows", [])
+            builder_table = None
             builder_status = mo.callout(
-                "Some cells cannot be cast yet. The last fully valid table is still active.",
+                "Fix the highlighted cells or formulas before using or saving this table.",
                 kind="warn",
             )
         else:
             builder_editor_widget.errors = []
+            builder_editor_widget.display_rows = display_rows(builder_table)
+            formula_count = sum(
+                bool(str(field.get("formula", "")).strip())
+                for field in builder_state.get("schema", [])
+            )
             builder_status = mo.callout(
-                f"Typed table: {builder_table.row_count:,} rows, {len(builder_table.schema):,} columns.",
+                f"Typed table: {builder_table.row_count:,} rows, "
+                f"{len(builder_table.schema):,} columns"
+                + (f", {formula_count} computed." if formula_count else "."),
                 kind="success",
             )
-    return builder_status, builder_table
+    return builder_state, builder_status, builder_table
 
 
 @app.cell
@@ -609,17 +764,18 @@ def _(build_expr_input, builder_table):
 
 
 @app.cell
-def _(builder_table, save_button, table_name_input):
+def _(builder_state, builder_table, save_button, table_name_input):
     if not save_button.value:
         save_status = mo.callout(
-            f"Saved tables are stored in `{SAVED_TABLE_DIR.name}/` beside this notebook.",
+            f"Saved tables are stored in `{SAVED_TABLE_DIR.name}/` beside this notebook. "
+            "Column formulas are persisted and recomputed when the table is reopened.",
             kind="info",
         )
-    elif builder_table is None:
+    elif builder_table is None or builder_state is None:
         save_status = mo.callout("There is no valid table to save.", kind="warn")
     else:
         try:
-            path = save_table(builder_table, table_name_input.value)
+            path = save_table(builder_state, table_name_input.value)
         except (ExpressionError, OSError) as error:
             save_status = mo.callout(str(error), kind="warn")
         else:
@@ -697,49 +853,51 @@ def run_extension_lab(definition: str, test_code: str):
 @app.cell
 def _():
     function_template = '''def _double_result(categories, node):
-    if categories != ["decimal"]:
-        raise ExpressionError("double() requires a decimal.")
-    return "decimal"
+        if categories != ["decimal"]:
+            raise ExpressionError("double() requires a decimal.")
+        return "decimal"
 
 
-def _double_impl(values):
-    return values[0] * 2
+    def _double_impl(values):
+        return values[0] * 2
 
 
-FUNCTIONS["double"] = FunctionSpec(
-    "double", 1, 1, False, _double_result, _double_impl
-)
-'''
+    FUNCTIONS["double"] = FunctionSpec(
+        "double", 1, 1, False, _double_result, _double_impl
+    )
+    '''
     cast_template = '''register_cast(
-    "text",
-    "uppertext",
-    "text",
-    lambda value: value.upper(),
-)
-'''
+        "text",
+        "uppertext",
+        "text",
+        lambda value: value.upper(),
+    )
+    '''
     type_template = '''from dataclasses import dataclass
 
-@dataclass(frozen=True)
-class ExampleCode:
-    value: str
+    @dataclass(frozen=True)
+    class ExampleCode:
+        value: str
 
 
-def example_category(value):
-    if isinstance(value, ExampleCode):
-        return Type("example_code")
-    return category_of(value)
-'''
+    def example_category(value):
+        if isinstance(value, ExampleCode):
+            return Type("example_code")
+        return category_of(value)
+    '''
 
     extension_kind = mo.ui.dropdown(
         options={"Function": "function", "Cast": "cast", "Type prototype": "type"},
-        value="function",
+        value="Function",
         label="Extension kind",
     )
-    extension_definition = mo.ui.text_area(
+    extension_definition = mo.ui.code_editor(
         label="Python definition",
+        language="python",
         value=function_template,
-        rows=18,
-        full_width=True,
+        max_height=668,
+        show_copy_button=True,
+
     )
     extension_test = mo.ui.text_area(
         label="Test code",
@@ -761,7 +919,16 @@ def example_category(value):
             extension_run,
         ]
     )
-    return cast_template, extension_controls, extension_definition, extension_kind, extension_run, extension_test, function_template, type_template
+    return (
+        cast_template,
+        extension_controls,
+        extension_definition,
+        extension_kind,
+        extension_run,
+        extension_test,
+        function_template,
+        type_template,
+    )
 
 
 @app.cell
@@ -828,8 +995,10 @@ def _(
         [
             mo.md("## Table builder"),
             mo.md(
-                "Create an empty typed table from a schema, add rows/columns in the grid, "
-                "manipulate it as `data`, and persist the result to typed JSON."
+                "Create an empty typed table from a schema, edit every value directly, and "
+                "add computed columns with Calc formulas. Use row references such as "
+                "`date::DAYNAME` (or canonical `[date]::DAYNAME`) or `[end_time] - [start_time]`. Formulas and input data "
+                "are persisted together."
             ),
             builder_controls,
             builder_base_status,
@@ -858,7 +1027,8 @@ def _(
             extension_controls,
             extension_hint,
             extension_result,
-        ]
+        ],
+        heights="equal"
     )
 
     workspace_tabs = mo.ui.tabs(
@@ -871,6 +1041,12 @@ def _(
     )
 
     mo.vstack([header, workspace_tabs])
+    return
+
+
+@app.cell
+def _():
+    return
 
 
 if __name__ == "__main__":
