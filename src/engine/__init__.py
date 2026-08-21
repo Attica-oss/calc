@@ -16,6 +16,7 @@ Split by responsibility:
 - functions: the FUNCTIONS registry (abs, round, if, ...).
 - evaluator: the type checker, evaluator, and evaluate_expression.
 - formatting: rendering evaluated values back to display text.
+- type_runtime: first-class runtime Type values and type equality.
 """
 
 from .calendar_utils import (
@@ -90,6 +91,10 @@ from .values import (
     negate_duration,
     to_decimal,
 )
+from .type_runtime import install_type_value_semantics as _install_type_value_semantics
+
+_install_type_value_semantics()
+del _install_type_value_semantics
 
 __all__ = [
     "BINARY_RULES",
