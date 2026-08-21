@@ -54,6 +54,7 @@ const FUNCTIONS = new Set([
   "concat",
   "conj",
   "dayname",
+  "dayname_ph",
   "days_between",
   "e",
   "eomonth",
@@ -80,6 +81,7 @@ const FUNCTIONS = new Set([
   "now",
   "or",
   "pi",
+  "rate_bucket",
   "re",
   "right",
   "round",
@@ -95,7 +97,7 @@ const FUNCTIONS = new Set([
   "title",
   "today",
   "type_of",
-  "upper"
+  "upper",
 ]);
 
 // Arity 0,0 in the same registry. They still require call syntax — pi() not
@@ -134,7 +136,8 @@ const DATETIME =
   /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]) (?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?/;
 const DATE = /^\d{4}-\d{2}-\d{2}/;
 const TIME = /^\d{2}:\d{2}(?::\d{2})?/;
-const DURATION = /^(?:\d+(?:\.\d+)?|\.\d+)(?:min|mo|[dhwsy])/;
+const DURATION =
+  /^(?:\d+(?:\.\d+)?|\.\d+)(?:min|mo|[dhwsy])(?:[ \t]+(?:\d+(?:\.\d+)?|\.\d+)(?:min|mo|[dhwsy]))*/;
 const CURRENCY = /^\$(?:\d+(?:\.\d*)?|\.\d+)/;
 const TONNAGE = /^(?:\d+(?:\.\d*)?|\.\d+)t/;
 const PERCENT = /^(?:\d+(?:\.\d*)?|\.\d+)%/;

@@ -91,6 +91,18 @@ def register_unary(op, category, result, impl):
     UNARY_RULES[(op, category)] = (result, impl)
 
 
+# ---- Types -----------------------------------------------------
+#
+register_binary("=", "type", "type", "boolean", lambda a, b: a == b)
+register_binary(
+    "<>",
+    "type",
+    "type",
+    "boolean",
+    lambda a, b: a != b,
+)
+
+
 # ---- Numbers -----------------------------------------------------
 
 
@@ -237,6 +249,35 @@ def duration_divide(value, divisor) -> Duration:
     )
 
 
+def duration_divide_by_duration(a: Duration, b: Duration) -> Decimal:
+    """Dividing durations by durations"""
+
+    """Return the ratio between two compatible durations."""
+
+    if a.months and (a.days or a.seconds) or b.months and (b.days or b.seconds):
+        raise ExpressionError("Cannot divide mixed calendar and fixed durations.")
+
+    # Pure month durations can be compared directly.
+    if a.months or b.months:
+        if a.days or a.seconds or b.days or b.seconds:
+            raise ExpressionError(
+                "Cannot compare months with fixed durations without a calendar context."
+            )
+
+        if b.months == 0:
+            raise ExpressionError("Cannot divide by a zero duration.")
+
+        return Decimal(a.months) / Decimal(b.months)
+
+    a_seconds = Decimal(a.days * 86_400 + a.seconds)
+    b_seconds = Decimal(b.days * 86_400 + b.seconds)
+
+    if b_seconds == 0:
+        raise ExpressionError("Cannot divide by a zero duration.")
+
+    return a_seconds / b_seconds
+
+
 register_binary("+", "duration", "duration", "duration", duration_add)
 register_binary("-", "duration", "duration", "duration", duration_subtract)
 
@@ -312,6 +353,7 @@ register_binary(
 # message before evaluation.
 register_binary("*", "duration", "int", "duration", duration_scale, symmetric=True)
 register_binary("/", "duration", "int", "duration", duration_divide)
+register_binary("/", "duration", "duration", "decimal", duration_divide_by_duration)
 
 
 # ---- Collections: element-wise lifting ---------------------------

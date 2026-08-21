@@ -53,6 +53,11 @@ TOKEN_RE: Pattern[str] = re.compile(
     (?P<DURATION>
         (?:\d+(?:\.\d+)?|\.\d+)
         (?:min|mo|[dhwsy])
+        (?:
+                [ \t]+
+                (?:\d+(?:\.\d+)?|\.\d+)
+                (?:min|mo|[dhwsy])
+            )*
     )
     |
     (?P<CURRENCY>

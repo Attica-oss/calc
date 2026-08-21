@@ -25,6 +25,11 @@ from .calendar_utils import (
 )
 from .operators import _guard_indeterminate, compare_key
 from .parser import Call, Literal
+from .rate_bucket_utils import (
+    _RATE_BUCKET_REQUIRED_FIELDS,
+    _RATE_BUCKET_SCHEMA,
+    _rate_bucket_values,
+)
 from .values import (
     INFINITY,
     Array,
@@ -943,13 +948,14 @@ def _colcount_impl(values):
 
 
 def _length_result(categories, node):
-    if not _is_type(categories[0], "array"):
-        _fail(node, "len() requires an array.")
-
+    if not _is_type(categories[0], "array") and not _is_type(categories[0], "text"):
+        _fail(node, "len() requires an array or text.")
     return "int"
 
 
 def _length_impl(values):
+    if isinstance(values[0], str):
+        return len(values[0])
     return len(values[0].values)
 
 
@@ -1472,7 +1478,11 @@ def _concat_result(categories, node):
 
     for category in values:
         if not _is_text_collection(category):
-            _fail(node, "concat() accepts text, blank, or collections of text.")
+            _fail(
+                node,
+                "concat() accepts text, blank, or collections of text and not "
+                + str(category),
+            )
 
     return "text"
 
@@ -1936,7 +1946,171 @@ def _type_of_result(categories, node):
 
 def _type_of_impl(values):
     [value] = values
-    return str(category_of(value))
+    return category_of(value)
+
+
+# --- dayname_ph()
+# Returns the name of the day of the week for a given date.
+#
+#
+
+
+def _dayname_with_ph_result(categories, node):
+    if categories[0] in ("date", "datetime"):
+        return "text"
+    else:
+        _fail(node, "dayname_ph() requires a date or datetime.")
+
+
+def _dayname_with_ph_impl(values):
+    [value] = values
+    if is_public_holiday(value):
+        return "PH"
+    else:
+        return value.strftime("%a")
+
+
+# === Custom Functions
+# Rate bucket functions
+#
+
+
+def _rate_bucket_result(categories, node):
+    # ---------------------------------------------------------
+    # rate_bucket(table)
+    # ---------------------------------------------------------
+
+    if len(categories) == 1:
+        table_type = categories[0]
+
+        _require_table(
+            node,
+            table_type,
+            "rate_bucket()",
+        )
+
+        fields_by_name = {
+            name.lower(): field_type for name, field_type in table_type.fields
+        }
+
+        for name, expected in _RATE_BUCKET_REQUIRED_FIELDS.items():
+            actual = fields_by_name.get(name)
+
+            if actual is None:
+                _fail(
+                    node,
+                    f"rate_bucket() requires column {name!r}.",
+                )
+
+            if actual != expected:
+                _fail(
+                    node,
+                    f"rate_bucket() column {name!r} must be {expected}, got {actual}.",
+                )
+
+        existing = {name.lower() for name, _ in table_type.fields}
+
+        for name, _ in _RATE_BUCKET_SCHEMA:
+            if name.lower() in existing:
+                _fail(
+                    node,
+                    f"rate_bucket() cannot add {name!r}; "
+                    "the table already has that column.",
+                )
+
+        return Type(
+            "table",
+            fields=table_type.fields + _RATE_BUCKET_SCHEMA,
+        )
+
+    # ---------------------------------------------------------
+    # rate_bucket(date, start_time, end_time, day_name)
+    # ---------------------------------------------------------
+
+    if len(categories) == 4:
+        expected = (
+            "date",
+            "time",
+            "time",
+            "text",
+        )
+
+        if tuple(categories) != expected:
+            _fail(
+                node,
+                "rate_bucket() requires (date, time, time, text).",
+            )
+
+        return Type(
+            "table",
+            fields=_RATE_BUCKET_SCHEMA,
+        )
+
+    _fail(
+        node,
+        "rate_bucket() takes either a table or (date, start_time, end_time, day_name).",
+    )
+
+
+def _rate_bucket_impl(values):
+    # ---------------------------------------------------------
+    # Scalar
+    # ---------------------------------------------------------
+
+    if len(values) == 4:
+        result = _rate_bucket_values(
+            values[0],
+            values[1],
+            values[2],
+            values[3],
+        )
+
+        return Table(
+            schema=_RATE_BUCKET_SCHEMA,
+            columns=tuple((value,) for value in result),
+        )
+
+    # ---------------------------------------------------------
+    # Table
+    # ---------------------------------------------------------
+
+    table = values[0]
+
+    by_name = {name.lower(): index for index, (name, _) in enumerate(table.schema)}
+
+    date_column = table.columns[by_name["date"]]
+    start_column = table.columns[by_name["start_time"]]
+    end_column = table.columns[by_name["end_time"]]
+    day_column = table.columns[by_name["day_name"]]
+
+    results = [
+        _rate_bucket_values(
+            service_date,
+            start_time,
+            end_time,
+            day_name,
+        )
+        for (
+            service_date,
+            start_time,
+            end_time,
+            day_name,
+        ) in zip(
+            date_column,
+            start_column,
+            end_column,
+            day_column,
+        )
+    ]
+
+    calculated_columns = tuple(
+        tuple(row[column] for row in results) for column in range(4)
+    )
+
+    return Table(
+        schema=table.schema + _RATE_BUCKET_SCHEMA,
+        columns=table.columns + calculated_columns,
+    )
 
 
 # ---- REGISTER THE FUNCTIONS
@@ -2108,5 +2282,14 @@ FUNCTIONS: dict[str, FunctionSpec] = {
     # capitalize(text) -> the text with the first letter capitalized.
     "capitalize": FunctionSpec(
         "capitalize", 1, 1, False, _capitalize_result, _capitalize_impl
+    ),
+    # dayname(date|datetime) -> the name of the day of the week.
+    "dayname_ph": FunctionSpec(
+        "dayname_ph", 1, 1, False, _dayname_with_ph_result, _dayname_with_ph_impl
+    ),
+    # rate_bucket(table) -> a table with rate bucket columns added.
+    # rate_bucket(date, start_time, end_time, day_name) ->
+    "rate_bucket": FunctionSpec(
+        "rate_bucket", 1, 4, False, _rate_bucket_result, _rate_bucket_impl
     ),
 }

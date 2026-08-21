@@ -202,37 +202,75 @@ def parse_string_literal(text: str, position: int) -> str:
     return "".join(characters)
 
 
+
+_DURATION_COMPONENT_RE = re.compile(
+    r"(\d+(?:\.\d+)?|\.\d+)(min|mo|[dhwsy])"
+)
+
+
 def parse_duration_literal(text: str, position: int) -> Duration:
-    match = re.fullmatch(
-        r"(\d+(?:\.\d+)?|\.\d+)(min|mo|[dhwsy])",
-        text,
+    """Parse a compound duration such as `1d 2h 30min`."""
+    component_pattern = (
+        r"(?:\d+(?:\.\d+)?|\.\d+)"
+        r"(?:min|mo|[dhwsy])"
     )
 
-    if match is None:
-        raise ExpressionError(f"Invalid duration: {text!r}.", position)
-
-    amount_text, unit = match.groups()
-    amount = Decimal(amount_text)
-
-    if not amount.to_integral_value():
+    if re.fullmatch(
+        rf"{component_pattern}(?:[ \t]+{component_pattern})*",
+        text,
+    ) is None:
         raise ExpressionError(
-            "Durations must currently use whole numbers, such as 30min, 2h, 3d, 4mo, or 1y.",
+            f"Invalid duration: {text!r}.",
             position,
         )
 
-    amount = int(amount)
+    months = 0
+    days = 0
+    seconds = 0
 
-    scale = {
-        "s": Duration(seconds=amount),
-        "min": Duration(seconds=amount * 60),
-        "h": Duration(seconds=amount * 3600),
-        "d": Duration(days=amount),
-        "w": Duration(days=amount * 7),
-        "mo": Duration(months=amount),
-        "y": Duration(months=amount * 12),
-    }
+    for match in _DURATION_COMPONENT_RE.finditer(text):
+        amount_text, unit = match.groups()
 
-    return scale[unit]
+        amount = Decimal(amount_text)
+        integral = amount.to_integral_value()
+
+        # Important: this also fixes 0min.
+        if amount != integral:
+            raise ExpressionError(
+                "Durations must currently use whole numbers, "
+                "such as 30min, 2h, 3d, 4mo, or 1y.",
+                position,
+            )
+
+        amount = int(integral)
+
+        match unit:
+            case "s":
+                seconds += amount
+
+            case "min":
+                seconds += amount * 60
+
+            case "h":
+                seconds += amount * 3600
+
+            case "d":
+                days += amount
+
+            case "w":
+                days += amount * 7
+
+            case "mo":
+                months += amount
+
+            case "y":
+                months += amount * 12
+
+    return Duration(
+        months=months,
+        days=days,
+        seconds=seconds,
+    )
 
 
 class Parser:

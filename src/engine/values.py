@@ -398,6 +398,9 @@ def category_of(value: object) -> Type:
     if isinstance(value, Decimal):
         return Type("decimal")
 
+    if isinstance(value, Type):
+        return Type("type")
+
     if isinstance(value, str):
         return Type("text")
 
