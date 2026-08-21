@@ -1,6 +1,6 @@
-"""Regression tests for first-class Calc type values."""
+"""Regression tests for first-class Calc type values and structural casts."""
 
-from src.engine import Type, evaluate_expression, format_result
+from src.engine import Array, Type, evaluate_expression, format_result
 
 
 def assert_type_value(expression: str, expected: Type) -> Type:
@@ -26,6 +26,14 @@ def test_column_type_ignores_the_column_header():
 
     assert first == second
     assert format_result(first) == "column{int}"
+
+
+def test_column_type_result_is_not_text():
+    result = evaluate_expression('type_of(column("name", 1, 2, 3, 5))')
+
+    assert result.category == "type"
+    assert isinstance(result.value, Type)
+    assert format_result(result.value) == "column{int}"
 
 
 def test_type_values_support_equality_and_inequality():
@@ -67,3 +75,34 @@ def test_table_type_keeps_column_names_as_schema():
     )
 
     assert format_result(value) == "table{name: decimal, age: duration}"
+
+
+def test_column_can_be_cast_to_array():
+    result = evaluate_expression('column("name", 1, 2, 3, 5)::ARRAY')
+
+    assert result.category == Type(
+        "array",
+        fields=((None, Type("int")),),
+    )
+    assert result.value == Array(
+        values=(1, 2, 3, 5),
+        element_type=Type("int"),
+    )
+    assert format_result(result.value) == "[1, 2, 3, 5]"
+
+
+def test_column_to_array_preserves_element_type():
+    result = evaluate_expression('column("duration", 1h, 30min)::ARRAY')
+
+    assert result.category == Type(
+        "array",
+        fields=((None, Type("duration")),),
+    )
+    assert result.value.element_type == Type("duration")
+
+
+def test_column_to_array_can_feed_array_functions():
+    result = evaluate_expression('sum(column("n", 1, 2, 3)::ARRAY)')
+
+    assert result.category == "int"
+    assert result.value == 6
