@@ -12,3 +12,6 @@ wheels/
 # marimo's auto_download=["html"] writes a snapshot here on every save;
 # it's a build artifact, not source.
 src/__marimo__/
+
+# Local Calc Workbench tables persisted by src/engine_extensions.py.
+src/.calc_tables/
