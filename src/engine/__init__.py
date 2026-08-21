@@ -17,6 +17,7 @@ Split by responsibility:
 - evaluator: the type checker, evaluator, and evaluate_expression.
 - formatting: rendering evaluated values back to display text.
 - type_runtime: first-class runtime Type values and type equality.
+- user_functions: named statically typed script-level fn declarations.
 """
 
 from .calendar_utils import (
@@ -34,7 +35,6 @@ from .evaluator import (
     check_types,
     evaluate_expression,
     evaluate_node,
-    evaluate_script,
 )
 from .formatting import (
     format_array,
@@ -61,7 +61,6 @@ from .parser import (
     Var,
     parse,
     parse_duration_literal,
-    parse_script,
     variables_in,
 )
 from .values import (
@@ -96,6 +95,8 @@ from .type_runtime import install_type_value_semantics as _install_type_value_se
 _install_type_value_semantics()
 del _install_type_value_semantics
 
+from .user_functions import FnDef, FnParameter, evaluate_script, parse_script
+
 __all__ = [
     "BINARY_RULES",
     "CAST_RULES",
@@ -119,6 +120,8 @@ __all__ = [
     "Environment",
     "EvaluationResult",
     "ExpressionError",
+    "FnDef",
+    "FnParameter",
     "FunctionSpec",
     "Let",
     "Literal",
